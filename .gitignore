@@ -1,0 +1,36 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# SQLite databases
+*.db
+*.db-journal
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Installer output
+installer_output/
+
+# Release builds
+release/
+
+# Scanner-generated files
+data/image_cache/
+data/feature_cache/
+data/scans/
+
+# IDE
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
