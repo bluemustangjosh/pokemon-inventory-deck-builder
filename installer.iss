@@ -1,5 +1,5 @@
 #define MyAppName "Pokemon Inventory & Deck Builder"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.2"
 #define MyAppExeName "Pokemon Inventory Deck Builder.exe"
 
 [Setup]
@@ -13,7 +13,7 @@ DefaultGroupName={#MyAppName}
 PrivilegesRequired=lowest
 
 OutputDir=installer_output
-OutputBaseFilename=Pokemon Inventory Deck Builder Setup 1.0.0
+OutputBaseFilename=Pokemon Inventory Deck Builder Setup 1.0.2
 
 SetupIconFile=assets\app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}

@@ -13,7 +13,7 @@ def search_cards(query):
         FROM cards
         WHERE name LIKE ?
         ORDER BY name ASC
-        LIMIT 50
+        LIMIT 200
     """, (f"%{query}%",))
 
     results = cursor.fetchall()
@@ -149,6 +149,9 @@ def decrease_inventory(card_id):
             DELETE FROM inventory
             WHERE id = ?
         """, (inventory_id,))
+
+    conn.commit()
+    conn.close()
 
 def find_card_by_set_and_number(set_code, card_number):
     conn = sqlite3.connect(DB_PATH)
