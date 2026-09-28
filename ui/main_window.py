@@ -5,6 +5,7 @@ from ui.home_page import HomePage
 from ui.card_details_page import CardDetailsPage
 from ui.inventory_page import InventoryPage
 from ui.decklist_page import DecklistPage
+from ui.scan_card_page import ScanCardPage
 
 from version import APP_NAME, APP_VERSION
 from paths import resource_path
@@ -96,3 +97,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(
             self.home_page
         )
+
+    def open_scanner(self):
+        self.scanner_page = ScanCardPage()
+        self.setCentralWidget(self.scanner_page)

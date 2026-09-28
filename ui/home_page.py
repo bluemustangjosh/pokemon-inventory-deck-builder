@@ -96,17 +96,15 @@ class HomePage(QWidget):
         )
 
         scanner_button = self.create_feature_button(
-            "Card Scanner",
-            "Experimental scanner coming in a future update"
+    "Card Scanner",
+    "Experimental card identification"
+)
+
+        scanner_button.clicked.connect(
+            self.open_scanner
         )
 
-        scanner_button.setEnabled(
-            False
-        )
-
-        buttons_layout.addWidget(
-            scanner_button
-        )
+        buttons_layout.addWidget(scanner_button)
 
         main_layout.addLayout(
             buttons_layout
@@ -287,3 +285,6 @@ class HomePage(QWidget):
 
     def open_decklist(self):
         self.window().open_decklist()
+
+    def open_scanner(self):
+        self.window().open_scanner()

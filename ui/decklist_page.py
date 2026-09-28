@@ -20,7 +20,8 @@ from db import (
     get_saved_decks,
     get_deck,
     update_deck,
-    delete_deck
+    delete_deck,
+    get_total_inventory_by_card_name
 )
 
 
@@ -663,6 +664,16 @@ class DecklistPage(QWidget):
         total_owned = 0
         total_missing = 0
 
+        # ----------------------------------------------
+        # Parsed deck requirements
+        # ----------------------------------------------
+
+        requirements = {}
+
+        basic_energy_lines = []
+
+        not_found_lines = []
+
         for line in lines:
 
             line = line.strip()
@@ -693,23 +704,24 @@ class DecklistPage(QWidget):
                 card_name_parts
             )
 
-            # ----------------------------------------------
+            # ------------------------------------------
             # Basic Energy
-            # ----------------------------------------------
+            # ------------------------------------------
 
             if card_name in basic_energies:
 
-                self.results_list.addItem(
-                    f"⚡ {card_name}"
-                    f"   •   Needed: {quantity_needed}"
-                    f"   •   Basic Energy"
+                basic_energy_lines.append(
+                    (
+                        card_name,
+                        quantity_needed
+                    )
                 )
 
                 continue
 
-            # ----------------------------------------------
-            # Card Lookup
-            # ----------------------------------------------
+            # ------------------------------------------
+            # Find exact card from decklist
+            # ------------------------------------------
 
             card = find_card_by_set_and_number(
                 set_code,
@@ -718,18 +730,128 @@ class DecklistPage(QWidget):
 
             if card is None:
 
-                self.results_list.addItem(
-                    f"⚠ {card_name}"
-                    f"   •   Card not found"
+                not_found_lines.append(
+                    card_name
                 )
 
                 continue
 
-            quantity_owned = (
-                get_inventory_quantity(
+            canonical_name = card["name"]
+            supertype = card["supertype"]
+
+            # ------------------------------------------
+            # Trainers use equivalent printings
+            # ------------------------------------------
+
+            if supertype == "Trainer":
+
+                key = (
+                    "trainer",
+                    canonical_name
+                )
+
+            else:
+
+                # Pokémon and other cards remain
+                # exact-printing matches for now.
+                key = (
+                    "exact",
                     card["id"]
                 )
+
+            if key not in requirements:
+
+                requirements[key] = {
+                    "name": canonical_name,
+                    "supertype": supertype,
+                    "card_id": card["id"],
+                    "set_id": card["set_id"],
+                    "number": card["number"],
+                    "quantity_needed": 0
+                }
+
+            requirements[key][
+                "quantity_needed"
+            ] += quantity_needed
+
+        # --------------------------------------------------
+        # Show Basic Energy
+        # --------------------------------------------------
+
+        for (
+            card_name,
+            quantity_needed
+        ) in basic_energy_lines:
+
+            self.results_list.addItem(
+                f"⚡ {card_name}"
+                f"   •   Needed: {quantity_needed}"
+                f"   •   Basic Energy"
             )
+
+        # --------------------------------------------------
+        # Show cards that could not be found
+        # --------------------------------------------------
+
+        for card_name in not_found_lines:
+
+            self.results_list.addItem(
+                f"⚠ {card_name}"
+                f"   •   Card not found"
+            )
+
+        # --------------------------------------------------
+        # Check inventory
+        # --------------------------------------------------
+
+        for key, requirement in (
+            requirements.items()
+        ):
+
+            card_name = (
+                requirement["name"]
+            )
+
+            supertype = (
+                requirement["supertype"]
+            )
+
+            quantity_needed = (
+                requirement[
+                    "quantity_needed"
+                ]
+            )
+
+            # ------------------------------------------
+            # Trainer equivalent printing matching
+            # ------------------------------------------
+
+            if supertype == "Trainer":
+
+                quantity_owned = (
+                    get_total_inventory_by_card_name(
+                        card_name,
+                        supertype
+                    )
+                )
+
+                display_extra = (
+                    "   •   All printings"
+                )
+
+            else:
+
+                quantity_owned = (
+                    get_inventory_quantity(
+                        requirement["card_id"]
+                    )
+                )
+
+                display_extra = ""
+
+            # ------------------------------------------
+            # Totals
+            # ------------------------------------------
 
             usable_owned = min(
                 quantity_owned,
@@ -754,9 +876,9 @@ class DecklistPage(QWidget):
                 quantity_missing
             )
 
-            # ----------------------------------------------
-            # Result Display
-            # ----------------------------------------------
+            # ------------------------------------------
+            # Result
+            # ------------------------------------------
 
             if quantity_missing == 0:
 
@@ -771,6 +893,7 @@ class DecklistPage(QWidget):
                 f"   •   Needed: {quantity_needed}"
                 f"   •   Owned: {quantity_owned}"
                 f"   •   Missing: {quantity_missing}"
+                f"{display_extra}"
             )
 
         # --------------------------------------------------
@@ -803,7 +926,6 @@ class DecklistPage(QWidget):
         self.completion_label.setText(
             f"Completion: {completion:.1f}%"
         )
-
     # --------------------------------------------------
     # Summary Reset
     # --------------------------------------------------

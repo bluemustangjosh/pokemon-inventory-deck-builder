@@ -158,16 +158,22 @@ def find_card_by_set_and_number(set_code, card_number):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT cards.id,
-               cards.name,
-               cards.set_id,
-               cards.number
+        SELECT
+            cards.id,
+            cards.name,
+            cards.set_id,
+            cards.number,
+            cards.supertype
         FROM cards
-        JOIN sets ON cards.set_id = sets.id
+        JOIN sets
+            ON cards.set_id = sets.id
         WHERE UPPER(sets.ptcgo_code) = UPPER(?)
           AND cards.number = ?
         LIMIT 1
-    """, (set_code, card_number))
+    """, (
+        set_code,
+        card_number
+    ))
 
     row = cursor.fetchone()
     conn.close()
@@ -179,7 +185,8 @@ def find_card_by_set_and_number(set_code, card_number):
         "id": row[0],
         "name": row[1],
         "set_id": row[2],
-        "number": row[3]
+        "number": row[3],
+        "supertype": row[4]
     }
 
 def save_deck(name, raw_text):
@@ -322,6 +329,69 @@ def get_cards_by_set_ids(set_ids):
         }
         for row in rows
     ]
+
+def get_inventory_by_card_name(card_name):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            cards.id,
+            cards.name,
+            cards.set_id,
+            cards.number,
+            inventory.quantity
+        FROM inventory
+        JOIN cards
+            ON inventory.card_id = cards.id
+        WHERE LOWER(TRIM(cards.name)) = LOWER(TRIM(?))
+          AND inventory.quantity > 0
+        ORDER BY cards.set_id, cards.number
+    """, (card_name,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+def get_total_inventory_by_card_name(card_name):
+    rows = get_inventory_by_card_name(card_name)
+
+    return sum(
+        row[4]
+        for row in rows
+    )
+
+def get_total_inventory_by_card_name(
+    card_name,
+    supertype
+):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COALESCE(
+            SUM(inventory.quantity),
+            0
+        )
+        FROM inventory
+        JOIN cards
+            ON inventory.card_id = cards.id
+        WHERE LOWER(TRIM(cards.name))
+              = LOWER(TRIM(?))
+          AND cards.supertype = ?
+    """, (
+        card_name,
+        supertype
+    ))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return row[0] if row else 0
+
+
 
     conn.commit()
     conn.close()
