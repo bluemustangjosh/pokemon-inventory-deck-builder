@@ -16,6 +16,7 @@ class Set(Base):
     id = Column(String, primary_key=True)
     name = Column(String)
     ptcgo_code = Column(String)
+    printed_total = Column(Integer)
     release_date = Column(String)
     updated_at = Column(String)
 

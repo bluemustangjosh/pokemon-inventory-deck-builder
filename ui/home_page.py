@@ -220,35 +220,33 @@ class HomePage(QWidget):
     # Search
     # --------------------------------------------------
 
-    def perform_search(
-        self,
-        text
-    ):
+    def perform_search(self, text):
         self.results_list.clear()
 
         if not text.strip():
             return
 
-        results = search_cards(
-            text
-        )
+        results = search_cards(text)
 
-        for (
-            card_id,
-            name,
-            set_id,
-            number
-        ) in results:
+        for card_id, name, set_name, number, printed_total in results:
 
             set_display = (
-                set_id.upper()
-                if set_id
-                else "UNKNOWN"
+                set_name
+                if set_name
+                else "Unknown Set"
             )
 
+            if printed_total:
+                number_display = (
+                    f"{number}/{printed_total}"
+                )
+            else:
+                number_display = number
+
             item_text = (
-                f"{name}   •   "
-                f"{set_display} #{number}"
+                f"{name}"
+                f"   •   {set_display}"
+                f"   •   {number_display}"
             )
 
             self.results_list.addItem(

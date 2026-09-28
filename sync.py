@@ -29,6 +29,7 @@ def sync_all():
         if existing_set:
             existing_set.name = s.get("name")
             existing_set.ptcgo_code = s.get("ptcgoCode")
+            existing_set.printed_total = s.get("printedTotal")
             existing_set.release_date = s.get("releaseDate")
             existing_set.updated_at = s.get("updatedAt")
         else:
@@ -36,6 +37,7 @@ def sync_all():
                 id=set_id,
                 name=s.get("name"),
                 ptcgo_code=s.get("ptcgoCode"),
+                printed_total=s.get("printedTotal"),
                 release_date=s.get("releaseDate"),
                 updated_at=s.get("updatedAt")
             )

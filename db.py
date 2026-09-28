@@ -8,18 +8,39 @@ def search_cards(query):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
+    search = f"%{query.strip()}%"
+
     cursor.execute("""
-        SELECT id, name, set_id, number
+        SELECT
+            cards.id,
+            cards.name,
+            COALESCE(sets.name, cards.set_id),
+            cards.number,
+            sets.printed_total
         FROM cards
-        WHERE name LIKE ?
-        ORDER BY name ASC
+        LEFT JOIN sets
+            ON cards.set_id = sets.id
+        WHERE cards.name LIKE ?
+           OR cards.number LIKE ?
+           OR cards.set_id LIKE ?
+           OR sets.ptcgo_code LIKE ?
+           OR sets.name LIKE ?
+        ORDER BY
+            cards.name ASC,
+            cards.set_id DESC
         LIMIT 200
-    """, (f"%{query}%",))
+    """, (
+        search,
+        search,
+        search,
+        search,
+        search
+    ))
 
     results = cursor.fetchall()
     conn.close()
-    return results
 
+    return results
 
 def get_card_details(card_id):
     conn = sqlite3.connect(DB_PATH)
