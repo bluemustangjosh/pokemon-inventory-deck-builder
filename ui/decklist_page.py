@@ -427,8 +427,43 @@ class DecklistPage(QWidget):
             260
         )
 
+        self.shopping_title = QLabel(
+            "Missing Cards Shopping List"
+        )
+
+        self.shopping_title.setStyleSheet("""
+            font-size: 18px;
+            font-weight: 600;
+        """)
+
+        self.shopping_list = QListWidget()
+
+        self.shopping_list.setMinimumHeight(
+            160
+        )
+
+        self.copy_shopping_button = QPushButton(
+            "Copy Shopping List"
+        )
+
+        self.copy_shopping_button.clicked.connect(
+            self.copy_shopping_list
+        )
+
         editor_layout.addWidget(
             self.results_list
+        )
+
+        editor_layout.addWidget(
+            self.shopping_title
+        )
+
+        editor_layout.addWidget(
+            self.shopping_list
+        )
+
+        editor_layout.addWidget(
+            self.copy_shopping_button
         )
 
         content_layout.addWidget(
@@ -640,7 +675,9 @@ class DecklistPage(QWidget):
     # --------------------------------------------------
 
     def parse_decklist(self):
-        self.results_list.clear()
+        self.shopping_list.clear()
+
+        shopping_items = []
 
         raw_text = (
             self.deck_input
@@ -663,6 +700,7 @@ class DecklistPage(QWidget):
         total_tracked = 0
         total_owned = 0
         total_missing = 0
+        shopping_items = []
 
         # ----------------------------------------------
         # Parsed deck requirements
@@ -864,17 +902,22 @@ class DecklistPage(QWidget):
                 0
             )
 
-            total_tracked += (
-                quantity_needed
-            )
+            if quantity_missing > 0:
+                shopping_items.append(
+                    f"{quantity_missing} × {card_name}"
+                )
 
-            total_owned += (
-                usable_owned
-            )
+                total_tracked += (
+                    quantity_needed
+                 )
 
-            total_missing += (
-                quantity_missing
-            )
+                total_owned += (
+                    usable_owned
+                )
+
+                total_missing += (
+                    quantity_missing
+                )
 
             # ------------------------------------------
             # Result
@@ -926,6 +969,34 @@ class DecklistPage(QWidget):
         self.completion_label.setText(
             f"Completion: {completion:.1f}%"
         )
+
+        self.shopping_list_data = (
+            shopping_items
+        )
+
+        self.shopping_list.clear()
+
+        if shopping_items:
+
+            for item in shopping_items:
+                self.shopping_list.addItem(
+                    item
+                )
+
+            self.copy_shopping_button.setEnabled(
+                True
+            )
+
+        else:
+
+            self.shopping_list.addItem(
+                "✓ You have every tracked card!"
+            )
+
+            self.copy_shopping_button.setEnabled(
+                False
+            )
+
     # --------------------------------------------------
     # Summary Reset
     # --------------------------------------------------
@@ -953,3 +1024,23 @@ class DecklistPage(QWidget):
 
     def go_home(self):
         self.window().open_home()
+
+    def copy_shopping_list(self):
+        from PyQt6.QtWidgets import QApplication
+
+        if not hasattr(
+            self,
+            "shopping_list_data"
+        ):
+            return
+
+        if not self.shopping_list_data:
+            return
+
+        text = "\n".join(
+            self.shopping_list_data
+        )
+
+        QApplication.clipboard().setText(
+            text
+        )
