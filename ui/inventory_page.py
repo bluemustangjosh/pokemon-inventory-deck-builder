@@ -206,7 +206,7 @@ class InventoryPage(QWidget):
             for (
                 card_id,
                 name,
-                set_id,
+                set_name,
                 number,
                 quantity
             ) in self.full_inventory
@@ -237,14 +237,14 @@ class InventoryPage(QWidget):
         for (
             card_id,
             name,
-            set_id,
+            set_name,
             number,
             quantity
         ) in inventory:
 
             set_display = (
-                set_id.upper()
-                if set_id
+                set_name
+                if set_name
                 else "UNKNOWN"
             )
 

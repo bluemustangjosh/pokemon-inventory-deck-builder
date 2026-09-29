@@ -119,18 +119,30 @@ def get_inventory():
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT cards.id,
-               cards.name,
-               cards.set_id,
-               cards.number,
-               inventory.quantity
+        SELECT
+            cards.id,
+            cards.name,
+            COALESCE(
+                sets.name,
+                cards.set_id
+            ),
+            CASE
+                WHEN sets.printed_total IS NOT NULL
+                THEN cards.number || '/' || sets.printed_total
+                ELSE cards.number
+            END,
+            inventory.quantity
         FROM inventory
-        JOIN cards ON inventory.card_id = cards.id
+        JOIN cards
+            ON inventory.card_id = cards.id
+        LEFT JOIN sets
+            ON cards.set_id = sets.id
         WHERE inventory.quantity > 0
         ORDER BY cards.name ASC
     """)
 
     results = cursor.fetchall()
+
     conn.close()
 
     return results
