@@ -1,3 +1,4 @@
+from email.mime import image
 import re
 import os
 import json
@@ -29,7 +30,9 @@ from db import (
     get_cards_by_number,
     get_cards_by_set_ids,
     increase_inventory,
-    get_inventory_quantity
+    get_inventory_quantity,
+    get_all_card_names,
+    get_cards_by_exact_name
 )
 
 
@@ -1101,7 +1104,168 @@ class ScanCardPage(QWidget):
                 self.selected_image_path
             )
 
+            image = self.normalize_card_image(
+                image
+            )
+
             width, height = image.size
+
+             # ------------------------------------------
+            # Scanner 2.0 - Name Crop Diagnostics
+            # ------------------------------------------
+
+            from pathlib import Path
+
+            debug_dir = Path("data/scans/debug")
+            debug_dir.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            name_regions = {
+                "name_focused": (
+                    0.15, 0.09, 0.62, 0.20
+                ),
+                "name_focused_wide": (
+                    0.10, 0.07, 0.75, 0.23
+                ),
+                "upper_left": (
+                    0.08, 0.06, 0.78, 0.27
+                )
+            }
+
+            print()
+            print("NAME CROP DIAGNOSTICS")
+
+            for region_name, coordinates in name_regions.items():
+
+                x1, y1, x2, y2 = coordinates
+
+                crop = image.crop((
+                    int(width * x1),
+                    int(height * y1),
+                    int(width * x2),
+                    int(height * y2)
+                ))
+
+                crop.save(
+                    debug_dir / f"{region_name}.png"
+                )
+
+                # Convert PIL image to OpenCV
+                crop_cv = np.array(crop)
+
+                gray = cv2.cvtColor(
+                    crop_cv,
+                    cv2.COLOR_RGB2GRAY
+                )
+
+                gray = cv2.resize(
+                    gray,
+                    None,
+                    fx=5,
+                    fy=5,
+                    interpolation=cv2.INTER_CUBIC
+                )
+
+                # --------------------------------------
+                # Create multiple OCR versions
+                # --------------------------------------
+
+                _, otsu = cv2.threshold(
+                    gray,
+                    0,
+                    255,
+                    cv2.THRESH_BINARY
+                    + cv2.THRESH_OTSU
+                )
+
+                _, inverted = cv2.threshold(
+                    gray,
+                    0,
+                    255,
+                    cv2.THRESH_BINARY_INV
+                    + cv2.THRESH_OTSU
+                )
+
+                adaptive = cv2.adaptiveThreshold(
+                    gray,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    31,
+                    11
+                )
+
+                versions = {
+                    "gray": gray,
+                    "otsu": otsu,
+                    "inverted": inverted,
+                    "adaptive": adaptive
+                }
+
+                # Save them so we can inspect them
+                for version_name, version_image in versions.items():
+
+                    cv2.imwrite(
+                        str(
+                            debug_dir
+                            / (
+                                f"{region_name}_"
+                                f"{version_name}.png"
+                            )
+                        ),
+                        version_image
+                    )
+
+                print()
+                print(
+                    f"NAME REGION: {region_name}"
+                )
+
+                # --------------------------------------
+                # Try several Tesseract modes
+                # --------------------------------------
+
+                for version_name, version_image in versions.items():
+
+                    for psm in (7, 8, 11, 13):
+
+                        config = (
+                            f"--oem 3 --psm {psm} "
+                            "-c "
+                            "tessedit_char_whitelist="
+                            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                            "abcdefghijklmnopqrstuvwxyz"
+                            "'-"
+                        )
+
+                        text = (
+                            pytesseract.image_to_string(
+                                version_image,
+                                config=config
+                            )
+                            .strip()
+                        )
+
+                        print(
+                            f"{version_name} "
+                            f"PSM {psm}: "
+                            f"{repr(text)}"
+                        )
+
+            # ------------------------------------------
+            # Existing card-name OCR
+            # ------------------------------------------
+
+            top_crop = image.crop(
+                (
+                    int(width * 0.05),
+                    int(height * 0.02),
+                    int(width * 0.95),
+                    int(height * 0.20)
+                )
+            )
 
             # ------------------------------------------
             # Top section for card-name OCR
@@ -1135,6 +1299,76 @@ class ScanCardPage(QWidget):
             print("----------------------------")
             print(top_text)
             print("----------------------------")
+
+            # ------------------------------------------
+            # Scanner 2.0 - Name Recognition Test
+            # ------------------------------------------
+
+            all_card_names = get_all_card_names()
+
+            top_text_lower = top_text.lower()
+
+            # First, look for card names that appear
+            # directly in the OCR text.
+
+            direct_matches = []
+
+            for name in all_card_names:
+
+                if name.lower() in top_text_lower:
+
+                    direct_matches.append(name)
+
+            # Prefer longer names to help distinguish
+            # names such as Bulbasaur and
+            # Erika's Bulbasaur.
+
+            direct_matches.sort(
+                key=len,
+                reverse=True
+            )
+
+            # Also calculate fuzzy matches to handle
+            # small OCR spelling mistakes.
+
+            fuzzy_matches = []
+
+            for name in all_card_names:
+
+                score = fuzz.partial_ratio(
+                    name.lower(),
+                    top_text_lower
+                )
+
+                fuzzy_matches.append(
+                    (name, score)
+                )
+
+            fuzzy_matches.sort(
+                key=lambda result: result[1],
+                reverse=True
+            )
+
+            print()
+            print("----------------------------")
+            print("NAME RECOGNITION TEST")
+            print("----------------------------")
+
+            print("Direct matches:")
+
+            for name in direct_matches[:5]:
+                print(name)
+
+            print()
+            print("Top fuzzy matches:")
+
+            for name, score in fuzzy_matches[:10]:
+                print(
+                    name,
+                    round(score, 1)
+                )
+
+            
 
         except Exception as error:
 
@@ -1374,6 +1608,7 @@ class ScanCardPage(QWidget):
 
         best_card = None
         best_score = -1
+        best_visual_score = -1
 
         top_text_lower = (
             top_text.lower()
@@ -1507,10 +1742,8 @@ class ScanCardPage(QWidget):
 
             if combined_score > best_score:
 
-                best_score = (
-                    combined_score
-                )
-
+                best_score = combined_score
+                best_visual_score = visual_score
                 best_card = card
 
         # --------------------------------------------------
@@ -1522,6 +1755,54 @@ class ScanCardPage(QWidget):
             self.detected_label.setText(
                 "Detected Card: "
                 "No match found"
+            )
+
+            return
+
+        # --------------------------------------------------
+        # Scanner 2.0 Confidence Safety
+        # --------------------------------------------------
+
+        MIN_COMBINED_SCORE = 70
+        MIN_VISUAL_SCORE = 60
+
+        if (
+            best_score < MIN_COMBINED_SCORE
+            or best_visual_score < MIN_VISUAL_SCORE
+        ):
+
+            print()
+            print("----------------------------")
+            print("LOW CONFIDENCE RESULT")
+            print("----------------------------")
+            print(
+                "Possible card:",
+                best_card["name"]
+            )
+            print(
+                "Combined score:",
+                round(best_score, 1)
+            )
+            print(
+                "Visual score:",
+                round(best_visual_score, 1)
+            )
+
+            self.detected_card = None
+
+            self.detected_label.setText(
+                f"Possible Match - Low Confidence:\n"
+                f"{best_card['name']}\n"
+                f"{best_card['set_id'].upper()} "
+                f"#{best_card['number']}\n"
+                f"Match Score: "
+                f"{best_score:.0f}%\n\n"
+                f"Scanner will not add this card "
+                f"automatically."
+            )
+
+            self.add_button.setEnabled(
+                False
             )
 
             return
@@ -1686,6 +1967,171 @@ class ScanCardPage(QWidget):
         self.detected_label.setText(
             "Camera warming up...\n"
             "Wait for the scanner to become ready."
+        )
+
+    def normalize_card_image(self, image):
+        # Convert PIL image to OpenCV
+        image_cv = np.array(
+            image.convert("RGB")
+        )
+
+        image_cv = cv2.cvtColor(
+            image_cv,
+            cv2.COLOR_RGB2BGR
+        )
+
+        gray = cv2.cvtColor(
+            image_cv,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        blurred = cv2.GaussianBlur(
+            gray,
+            (5, 5),
+            0
+        )
+
+        edges = cv2.Canny(
+            blurred,
+            50,
+            150
+        )
+
+        contours, _ = cv2.findContours(
+            edges,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        contours = sorted(
+            contours,
+            key=cv2.contourArea,
+            reverse=True
+        )
+
+        card_contour = None
+
+        for contour in contours[:10]:
+
+            perimeter = cv2.arcLength(
+                contour,
+                True
+            )
+
+            approx = cv2.approxPolyDP(
+                contour,
+                0.02 * perimeter,
+                True
+            )
+
+            if len(approx) == 4:
+
+                area = cv2.contourArea(
+                    approx
+                )
+
+                image_area = (
+                    image_cv.shape[0]
+                    * image_cv.shape[1]
+                )
+
+                # Ignore tiny rectangles
+                if area > image_area * 0.25:
+                    card_contour = approx
+                    break
+
+        # If we cannot confidently find the
+        # card border, use the original image.
+        if card_contour is None:
+
+            print(
+                "Card border not detected. "
+                "Using original image."
+            )
+
+            return image
+
+        points = card_contour.reshape(
+            4,
+            2
+        ).astype("float32")
+
+        # Sort corners
+        point_sum = points.sum(
+            axis=1
+        )
+
+        point_diff = np.diff(
+            points,
+            axis=1
+        ).flatten()
+
+        top_left = points[
+            np.argmin(point_sum)
+        ]
+
+        bottom_right = points[
+            np.argmax(point_sum)
+        ]
+
+        top_right = points[
+            np.argmin(point_diff)
+        ]
+
+        bottom_left = points[
+            np.argmax(point_diff)
+        ]
+
+        source = np.array(
+            [
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left
+            ],
+            dtype="float32"
+        )
+
+        target_width = 750
+        target_height = 1050
+
+        destination = np.array(
+            [
+                [0, 0],
+                [target_width - 1, 0],
+                [
+                    target_width - 1,
+                    target_height - 1
+                ],
+                [
+                    0,
+                    target_height - 1
+                ]
+            ],
+            dtype="float32"
+        )
+
+        matrix = cv2.getPerspectiveTransform(
+            source,
+            destination
+        )
+
+        warped = cv2.warpPerspective(
+            image_cv,
+            matrix,
+            (
+                target_width,
+                target_height
+            )
+        )
+
+        warped = cv2.cvtColor(
+            warped,
+            cv2.COLOR_BGR2RGB
+        )
+
+        return Image.fromarray(
+            warped
         )
 
     def get_card_roi(self, frame):

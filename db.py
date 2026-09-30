@@ -455,6 +455,56 @@ def get_total_inventory_by_gameplay_key(
 
     return row[0] if row else 0
 
+def get_all_card_names():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT name
+        FROM cards
+        WHERE name IS NOT NULL
+        ORDER BY name
+    """)
+
+    names = [
+        row[0]
+        for row in cursor.fetchall()
+    ]
+
+    conn.close()
+
+    return names
+
+
+def get_cards_by_exact_name(card_name):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            name,
+            set_id,
+            number,
+            image_url
+        FROM cards
+        WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+    """, (card_name,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "set_id": row[2],
+            "number": row[3],
+            "image_url": row[4]
+        }
+        for row in rows
+    ]
+
 
 
     conn.commit()

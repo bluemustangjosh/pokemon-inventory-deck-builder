@@ -1,5 +1,16 @@
 import sys
 
+# Prevent Windows console encoding errors
+# when card names contain special characters.
+for stream in (sys.stdout, sys.stderr):
+    if (
+        stream is not None
+        and hasattr(stream, "reconfigure")
+    ):
+        stream.reconfigure(
+            errors="replace"
+        )
+
 from PyQt6.QtWidgets import QApplication
 
 from paths import (
