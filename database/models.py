@@ -37,6 +37,8 @@ class Card(Base):
     regulation_mark = Column(String)
     set_id = Column(String, ForeignKey("sets.id"))
 
+    gameplay_key = Column(String)
+
     set = relationship("Set", back_populates="cards")
 
 # -----------------------------

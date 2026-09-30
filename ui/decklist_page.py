@@ -21,7 +21,8 @@ from db import (
     get_deck,
     update_deck,
     delete_deck,
-    get_total_inventory_by_card_name
+    get_total_inventory_by_card_name,
+    get_total_inventory_by_gameplay_key
 )
 
 
@@ -788,10 +789,18 @@ class DecklistPage(QWidget):
                     canonical_name
                 )
 
+            elif (
+                supertype == "Pokémon"
+                and card.get("gameplay_key")
+            ):
+
+                key = (
+                    "pokemon_gameplay",
+                    card["gameplay_key"]
+                )
+
             else:
 
-                # Pokémon and other cards remain
-                # exact-printing matches for now.
                 key = (
                     "exact",
                     card["id"]
@@ -805,7 +814,8 @@ class DecklistPage(QWidget):
                     "card_id": card["id"],
                     "set_id": card["set_id"],
                     "number": card["number"],
-                    "quantity_needed": 0
+                    "quantity_needed": 0,
+                    "gameplay_key": card.get("gameplay_key")
                 }
 
             requirements[key][
@@ -875,6 +885,21 @@ class DecklistPage(QWidget):
 
                 display_extra = (
                     "   •   All printings"
+                )
+
+            elif (
+                supertype == "Pokémon"
+                and requirement.get("gameplay_key")
+            ):
+
+                quantity_owned = (
+                    get_total_inventory_by_gameplay_key(
+                        requirement["gameplay_key"]
+                    )
+                )
+
+                display_extra = (
+                    "   •   Equivalent printings"
                 )
 
             else:

@@ -407,34 +407,77 @@ class ScanCardPage(QWidget):
     def read_collector_number(self, image):
         width, height = image.size
 
-        # Try several crops around the
-        # bottom-left collector-number area.
+        # --------------------------------------------------
+        # Scanner 2.0
+        #
+        # Pokemon cards have used several layouts over
+        # the years. Modern cards often place collector
+        # information toward the lower-left, while many
+        # older cards place the collector number toward
+        # the lower-right.
+        # --------------------------------------------------
+
         crop_areas = [
             (
-                int(width * 0.02),
-                int(height * 0.86),
-                int(width * 0.45),
-                int(height * 0.99)
+                "bottom_left_wide",
+                (
+                    int(width * 0.02),
+                    int(height * 0.84),
+                    int(width * 0.50),
+                    int(height * 0.99)
+                )
             ),
             (
-                int(width * 0.02),
-                int(height * 0.88),
-                int(width * 0.42),
-                int(height * 0.99)
+                "bottom_left_tight",
+                (
+                    int(width * 0.02),
+                    int(height * 0.88),
+                    int(width * 0.42),
+                    int(height * 0.99)
+                )
             ),
             (
-                int(width * 0.05),
-                int(height * 0.89),
-                int(width * 0.50),
-                int(height * 0.98)
+                "bottom_center",
+                (
+                    int(width * 0.25),
+                    int(height * 0.84),
+                    int(width * 0.75),
+                    int(height * 0.99)
+                )
+            ),
+            (
+                "bottom_right_wide",
+                (
+                    int(width * 0.50),
+                    int(height * 0.84),
+                    int(width * 0.98),
+                    int(height * 0.99)
+                )
+            ),
+            (
+                "bottom_right_tight",
+                (
+                    int(width * 0.58),
+                    int(height * 0.87),
+                    int(width * 0.98),
+                    int(height * 0.99)
+                )
+            ),
+            (
+                "full_bottom",
+                (
+                    int(width * 0.02),
+                    int(height * 0.82),
+                    int(width * 0.98),
+                    int(height * 0.99)
+                )
             )
         ]
 
+        exact_results = []
         possible_results = []
 
-        for crop_index, crop_area in enumerate(
-            crop_areas
-        ):
+        for region_name, crop_area in crop_areas:
 
             number_crop = image.crop(
                 crop_area
@@ -449,7 +492,7 @@ class ScanCardPage(QWidget):
                 cv2.COLOR_RGB2GRAY
             )
 
-            # Make tiny text much larger
+            # Make tiny card text much larger
             gray = cv2.resize(
                 gray,
                 None,
@@ -460,12 +503,21 @@ class ScanCardPage(QWidget):
 
             versions = []
 
-            # Version 1 - grayscale
+            # ----------------------------------------------
+            # Grayscale
+            # ----------------------------------------------
+
             versions.append(
-                gray
+                (
+                    "grayscale",
+                    gray
+                )
             )
 
-            # Version 2 - Otsu threshold
+            # ----------------------------------------------
+            # Otsu threshold
+            # ----------------------------------------------
+
             _, otsu = cv2.threshold(
                 gray,
                 0,
@@ -475,17 +527,29 @@ class ScanCardPage(QWidget):
             )
 
             versions.append(
-                otsu
-            )
-
-            # Version 3 - inverted Otsu
-            versions.append(
-                cv2.bitwise_not(
+                (
+                    "otsu",
                     otsu
                 )
             )
 
-            # Version 4 - adaptive threshold
+            # ----------------------------------------------
+            # Inverted Otsu
+            # ----------------------------------------------
+
+            versions.append(
+                (
+                    "inverted",
+                    cv2.bitwise_not(
+                        otsu
+                    )
+                )
+            )
+
+            # ----------------------------------------------
+            # Adaptive threshold
+            # ----------------------------------------------
+
             adaptive = cv2.adaptiveThreshold(
                 gray,
                 255,
@@ -496,75 +560,144 @@ class ScanCardPage(QWidget):
             )
 
             versions.append(
-                adaptive
+                (
+                    "adaptive",
+                    adaptive
+                )
             )
 
-            for version_index, version in enumerate(
-                versions
-            ):
+            # --------------------------------------------------
+            # Try OCR on each processed image
+            # --------------------------------------------------
 
-                text = pytesseract.image_to_string(
-                    version,
-                    config="--psm 6"
-                ).strip()
+            for version_name, version in versions:
 
-                print(
-                    f"CROP {crop_index + 1} "
-                    f"OCR VERSION {version_index + 1}: "
-                    f"{repr(text)}"
-                )
+                # PSM 6 = block of text
+                # PSM 7 = single text line
+                for psm in [6, 7]:
 
-                # ------------------------------------------
-                # Best case:
-                #
-                # 193/182
-                # ------------------------------------------
+                    text = pytesseract.image_to_string(
+                        version,
+                        config=f"--psm {psm}"
+                    ).strip()
 
-                exact_match = re.search(
-                    r"(\d{1,4})\s*[/|]\s*(\d{1,4})",
-                    text
-                )
-
-                if exact_match:
-                    return {
-                        "card_number":
-                            exact_match.group(1),
-
-                        "set_total":
-                            exact_match.group(2),
-
-                        "exact": True
-                    }
-
-                # ------------------------------------------
-                # Imperfect OCR examples:
-                #
-                # 739,182
-                # 703,182
-                #
-                # The numerator may be wrong,
-                # but 182 keeps appearing correctly.
-                # ------------------------------------------
-
-                loose_matches = re.findall(
-                    r"(\d{2,4})\s*[,.:;]\s*(\d{2,4})",
-                    text
-                )
-
-                for first, second in loose_matches:
-
-                    possible_results.append(
-                        {
-                            "card_number": first,
-                            "set_total": second,
-                            "exact": False
-                        }
+                    print(
+                        f"{region_name} "
+                        f"| {version_name} "
+                        f"| PSM {psm}: "
+                        f"{repr(text)}"
                     )
 
-        # ----------------------------------------------
-        # If we did not get a perfect 193/182,
-        # trust the denominator that appeared most.
-        # ----------------------------------------------
+                    # ------------------------------------------
+                    # Best case
+                    #
+                    # 44/102
+                    # 193/182
+                    # ------------------------------------------
+
+                    exact_matches = re.findall(
+                        r"(?<!\d)"
+                        r"(\d{1,4})"
+                        r"\s*[/|]\s*"
+                        r"(\d{1,4})"
+                        r"(?!\d)",
+                        text
+                    )
+
+                    for first, second in exact_matches:
+
+                        exact_results.append(
+                            {
+                                "card_number": first,
+                                "set_total": second,
+                                "region": region_name
+                            }
+                        )
+
+                    # ------------------------------------------
+                    # Imperfect OCR
+                    #
+                    # 44,102
+                    # 44.102
+                    # 193,182
+                    # ------------------------------------------
+
+                    loose_matches = re.findall(
+                        r"(?<!\d)"
+                        r"(\d{1,4})"
+                        r"\s*[,.:;]\s*"
+                        r"(\d{1,4})"
+                        r"(?!\d)",
+                        text
+                    )
+
+                    for first, second in loose_matches:
+
+                        possible_results.append(
+                            {
+                                "card_number": first,
+                                "set_total": second,
+                                "region": region_name
+                            }
+                        )
+
+        # --------------------------------------------------
+        # Exact collector-number matches
+        #
+        # Instead of trusting the first OCR result we see,
+        # choose the result that appeared most often.
+        # --------------------------------------------------
+
+        if exact_results:
+
+            pair_counts = {}
+
+            for result in exact_results:
+
+                pair = (
+                    result["card_number"],
+                    result["set_total"]
+                )
+
+                pair_counts[pair] = (
+                    pair_counts.get(
+                        pair,
+                        0
+                    ) + 1
+                )
+
+            best_pair = max(
+                pair_counts,
+                key=pair_counts.get
+            )
+
+            card_number = best_pair[0]
+            set_total = best_pair[1]
+
+            print()
+            print(
+                "Best collector number:",
+                f"{card_number}/{set_total}"
+            )
+
+            print(
+                "Detected",
+                pair_counts[best_pair],
+                "times"
+            )
+
+            return {
+                "card_number": card_number,
+                "set_total": set_total,
+                "exact": True
+            }
+
+        # --------------------------------------------------
+        # Loose OCR fallback
+        #
+        # If slash recognition failed, use the denominator
+        # that OCR saw most consistently.
+        # --------------------------------------------------
 
         if possible_results:
 
@@ -601,6 +734,11 @@ class ScanCardPage(QWidget):
                 "set_total": best_denominator,
                 "exact": False
             }
+
+        print()
+        print(
+            "No collector number detected."
+        )
 
         return None
 

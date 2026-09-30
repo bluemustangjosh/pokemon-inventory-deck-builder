@@ -186,7 +186,10 @@ def decrease_inventory(card_id):
     conn.commit()
     conn.close()
 
-def find_card_by_set_and_number(set_code, card_number):
+def find_card_by_set_and_number(
+    set_code,
+    card_number
+):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -196,7 +199,8 @@ def find_card_by_set_and_number(set_code, card_number):
             cards.name,
             cards.set_id,
             cards.number,
-            cards.supertype
+            cards.supertype,
+            cards.gameplay_key
         FROM cards
         JOIN sets
             ON cards.set_id = sets.id
@@ -219,7 +223,8 @@ def find_card_by_set_and_number(set_code, card_number):
         "name": row[1],
         "set_id": row[2],
         "number": row[3],
-        "supertype": row[4]
+        "supertype": row[4],
+        "gameplay_key": row[5]
     }
 
 def save_deck(name, raw_text):
@@ -420,6 +425,32 @@ def get_total_inventory_by_card_name(
     ))
 
     row = cursor.fetchone()
+    conn.close()
+
+    return row[0] if row else 0
+
+def get_total_inventory_by_gameplay_key(
+    gameplay_key
+):
+    if not gameplay_key:
+        return 0
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COALESCE(
+            SUM(inventory.quantity),
+            0
+        )
+        FROM inventory
+        JOIN cards
+            ON inventory.card_id = cards.id
+        WHERE cards.gameplay_key = ?
+    """, (gameplay_key,))
+
+    row = cursor.fetchone()
+
     conn.close()
 
     return row[0] if row else 0
