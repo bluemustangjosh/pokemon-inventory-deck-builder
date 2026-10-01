@@ -1,2104 +1,674 @@
-from email.mime import image
-import re
-import os
-import json
-import io
-
 import cv2
 import numpy as np
-import requests
-import pytesseract
-from rapidfuzz import fuzz
+import pillow_heif
 
+from PIL import Image, ImageOps
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QFileDialog,
-    QMessageBox
+    QMessageBox,
 )
 
-from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt, QTimer
-from pillow_heif import register_heif_opener
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-
-register_heif_opener()
-
-from db import (
-    get_cards_by_number,
-    get_cards_by_set_ids,
-    increase_inventory,
-    get_inventory_quantity,
-    get_all_card_names,
-    get_cards_by_exact_name
+from scanner.visual_search import (
+    load_visual_index,
+    find_closest_cards,
+    rerank_candidates_with_orb,
 )
 
 
-# --------------------------------------------------
-# Tesseract Location
-# --------------------------------------------------
-
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-if os.path.exists(TESSERACT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-
-
-# --------------------------------------------------
-# Local Set Data
-# --------------------------------------------------
-
-SETS_PATH = "data/sets/en.json"
-
-IMAGE_CACHE_DIR = "data/image_cache"
-
-os.makedirs(
-    IMAGE_CACHE_DIR,
-    exist_ok=True
-)
-
-FEATURE_CACHE_DIR = "data/feature_cache"
-
-os.makedirs(
-    FEATURE_CACHE_DIR,
-    exist_ok=True
-)
-
-SCAN_DIR = "data/scans"
-
-os.makedirs(
-    SCAN_DIR,
-    exist_ok=True
-)
-
-# Webcam scanner settings
-STABLE_FRAMES_REQUIRED = 15
-MOTION_THRESHOLD = 4.5
-REMOVAL_FRAMES_REQUIRED = 8
-CAMERA_WARMUP_FRAMES = 75
+# Enable iPhone HEIC / HEIF images.
+pillow_heif.register_heif_opener()
 
 
 class ScanCardPage(QWidget):
+
     def __init__(self):
         super().__init__()
 
         self.selected_image_path = None
-        self.detected_card = None
+        self.selected_image = None
+        self.normalized_image = None
 
-        # --------------------------------------------------
-        # Webcam Scanner State
-        # --------------------------------------------------
-
-        self.camera = None
-
-        self.camera_timer = QTimer(self)
-        self.camera_timer.timeout.connect(
-            self.update_camera_frame
+        self.visual_index = (
+            load_visual_index()
         )
 
-        self.current_camera_frame = None
-        self.current_card_roi = None
+        print(
+            "Scanner visual fingerprints:",
+            len(self.visual_index)
+        )
 
-        self.previous_roi_gray = None
-        self.stable_frame_count = 0
+        self.build_ui()
 
-        self.waiting_for_card_removal = False
-        self.removal_frame_count = 0
+    # ==================================================
+    # UI
+    # ==================================================
 
-        self.scanning_in_progress = False
+    def build_ui(self):
+        layout = QVBoxLayout(self)
 
-        self.camera_warmup_count = 0
-        self.scanner_armed = False
+        layout.setContentsMargins(
+            30,
+            30,
+            30,
+            30
+        )
 
-        layout = QVBoxLayout()
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setSpacing(15)
 
-        # -----------------------------
+        # ----------------------------------------------
         # Title
-        # -----------------------------
+        # ----------------------------------------------
 
-        title = QLabel("Scan Card")
+        title = QLabel(
+            "Card Scanner 2.0"
+        )
+
         title.setStyleSheet("""
-            font-size: 24px;
-            font-weight: bold;
+            font-size: 26px;
+            font-weight: 700;
         """)
-        layout.addWidget(title)
-
-        # --------------------------------------------------
-        # Webcam Buttons
-        # --------------------------------------------------
-
-        self.start_camera_button = QPushButton(
-            "Start Scanner"
-        )
-
-        self.start_camera_button.clicked.connect(
-            self.start_camera
-        )
 
         layout.addWidget(
-            self.start_camera_button
+            title
         )
 
-
-        self.stop_camera_button = QPushButton(
-            "Stop Scanner"
+        subtitle = QLabel(
+            "Bare-card visual scanner"
         )
 
-        self.stop_camera_button.clicked.connect(
-            self.stop_camera
-        )
+        subtitle.setStyleSheet("""
+            font-size: 14px;
+            color: #aaaaaa;
+        """)
 
         layout.addWidget(
-            self.stop_camera_button
-)
-
-        # -----------------------------
-        # Instructions
-        # -----------------------------
-
-        instructions = QLabel(
-            "Choose a photo of a Pokemon card."
+            subtitle
         )
-        layout.addWidget(instructions)
 
-        # -----------------------------
-        # Choose Image Button
-        # -----------------------------
-
-        choose_button = QPushButton(
-            "Choose Card Image"
-        )
-        choose_button.clicked.connect(
-            self.choose_image
-        )
-        layout.addWidget(choose_button)
-
-        # -----------------------------
+        # ----------------------------------------------
         # Image Preview
-        # -----------------------------
+        # ----------------------------------------------
 
         self.image_label = QLabel(
-            "No image selected"
+            "Choose a card image to begin."
         )
 
         self.image_label.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
 
-        self.image_label.setFixedSize(
+        self.image_label.setMinimumSize(
             400,
-            560
+            500
         )
 
         self.image_label.setStyleSheet("""
             QLabel {
-                border: 2px solid #888;
-                background-color: #eeeeee;
+                border: 1px solid #555555;
+                border-radius: 8px;
+                background-color: #111111;
+                padding: 10px;
             }
         """)
 
         layout.addWidget(
-            self.image_label
-        )
-
-        # -----------------------------
-        # Detection Result
-        # -----------------------------
-
-        self.detected_label = QLabel(
-            "Detected Card: Not scanned yet"
-        )
-
-        self.detected_label.setWordWrap(True)
-
-        layout.addWidget(
-            self.detected_label
-        )
-
-        # -----------------------------
-        # Identify Button
-        # -----------------------------
-
-        self.identify_button = QPushButton(
-            "Identify Card"
-        )
-
-        self.identify_button.clicked.connect(
-            self.identify_card
-        )
-
-        layout.addWidget(
-            self.identify_button
-        )
-
-        # -----------------------------
-        # Add to Inventory Button
-        # -----------------------------
-
-        self.add_button = QPushButton(
-            "Add to Inventory"
-        )
-
-        self.add_button.setEnabled(False)
-
-        self.add_button.clicked.connect(
-            self.add_to_inventory
-        )
-
-        layout.addWidget(
-            self.add_button
-        )
-
-        # -----------------------------
-        # Back Button
-        # -----------------------------
-
-        back_button = QPushButton(
-            "Back to Home"
-        )
-
-        back_button.clicked.connect(
-            self.go_home
-        )
-
-        layout.addWidget(
-            back_button
-        )
-
-        self.setLayout(layout)
-
-    # --------------------------------------------------
-    # Choose Image
-    # --------------------------------------------------
-
-    def choose_image(self):
-        self.stop_camera()
-    
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose Card Image",
-            "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.webp *.heic *.heif)"
-        )
-    
-        if not file_path:
-            return
-    
-        try:
-            extension = os.path.splitext(
-                file_path
-            )[1].lower()
-    
-            # ------------------------------------------
-            # HEIC / HEIF
-            #
-            # Convert to PNG so PyQt and the rest of
-            # our scanner can use it normally.
-            # ------------------------------------------
-    
-            if extension in [".heic", ".heif"]:
-    
-                image = Image.open(
-                    file_path
-                )
-    
-                # Correct iPhone orientation
-                image = ImageOps.exif_transpose(
-                    image
-                )
-    
-                image = image.convert(
-                    "RGB"
-                )
-    
-                converted_path = os.path.join(
-                    SCAN_DIR,
-                    "selected_heic.png"
-                )
-    
-                image.save(
-                    converted_path,
-                    format="PNG"
-                )
-    
-                self.selected_image_path = (
-                    converted_path
-                )
-    
-            else:
-    
-                self.selected_image_path = (
-                    file_path
-                )
-    
-            self.detected_card = None
-    
-            # ------------------------------------------
-            # Preview
-            # ------------------------------------------
-    
-            pixmap = QPixmap(
-                self.selected_image_path
-            )
-    
-            if pixmap.isNull():
-    
-                QMessageBox.warning(
-                    self,
-                    "Image Error",
-                    "The selected image could not be loaded."
-                )
-    
-                return
-    
-            scaled_pixmap = pixmap.scaled(
-                self.image_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-    
-            self.image_label.setPixmap(
-                scaled_pixmap
-            )
-    
-            self.detected_label.setText(
-                "Detected Card: Ready to scan"
-            )
-    
-            self.add_button.setEnabled(
-                False
-            )
-    
-        except Exception as error:
-    
-            QMessageBox.critical(
-                self,
-                "Image Error",
-                f"The image could not be opened.\n\n{error}"
-            )
-    
-    def prepare_image_for_ocr(self, image):
-        image = image.convert("L")
-
-        image = ImageEnhance.Contrast(
-            image
-        ).enhance(2.5)
-
-        image = image.filter(
-            ImageFilter.SHARPEN
-        )
-
-        width, height = image.size
-
-        # Enlarge tiny text
-        image = image.resize(
-            (
-                width * 3,
-                height * 3
-            )
-        )
-
-        return image
-
-    # --------------------------------------------------
-    # Read Collector Number
-    # --------------------------------------------------
-
-    def read_collector_number(self, image):
-        width, height = image.size
-
-        # --------------------------------------------------
-        # Scanner 2.0
-        #
-        # Pokemon cards have used several layouts over
-        # the years. Modern cards often place collector
-        # information toward the lower-left, while many
-        # older cards place the collector number toward
-        # the lower-right.
-        # --------------------------------------------------
-
-        crop_areas = [
-            (
-                "bottom_left_wide",
-                (
-                    int(width * 0.02),
-                    int(height * 0.84),
-                    int(width * 0.50),
-                    int(height * 0.99)
-                )
-            ),
-            (
-                "bottom_left_tight",
-                (
-                    int(width * 0.02),
-                    int(height * 0.88),
-                    int(width * 0.42),
-                    int(height * 0.99)
-                )
-            ),
-            (
-                "bottom_center",
-                (
-                    int(width * 0.25),
-                    int(height * 0.84),
-                    int(width * 0.75),
-                    int(height * 0.99)
-                )
-            ),
-            (
-                "bottom_right_wide",
-                (
-                    int(width * 0.50),
-                    int(height * 0.84),
-                    int(width * 0.98),
-                    int(height * 0.99)
-                )
-            ),
-            (
-                "bottom_right_tight",
-                (
-                    int(width * 0.58),
-                    int(height * 0.87),
-                    int(width * 0.98),
-                    int(height * 0.99)
-                )
-            ),
-            (
-                "full_bottom",
-                (
-                    int(width * 0.02),
-                    int(height * 0.82),
-                    int(width * 0.98),
-                    int(height * 0.99)
-                )
-            )
-        ]
-
-        exact_results = []
-        possible_results = []
-
-        for region_name, crop_area in crop_areas:
-
-            number_crop = image.crop(
-                crop_area
-            )
-
-            crop_array = np.array(
-                number_crop.convert("RGB")
-            )
-
-            gray = cv2.cvtColor(
-                crop_array,
-                cv2.COLOR_RGB2GRAY
-            )
-
-            # Make tiny card text much larger
-            gray = cv2.resize(
-                gray,
-                None,
-                fx=5,
-                fy=5,
-                interpolation=cv2.INTER_CUBIC
-            )
-
-            versions = []
-
-            # ----------------------------------------------
-            # Grayscale
-            # ----------------------------------------------
-
-            versions.append(
-                (
-                    "grayscale",
-                    gray
-                )
-            )
-
-            # ----------------------------------------------
-            # Otsu threshold
-            # ----------------------------------------------
-
-            _, otsu = cv2.threshold(
-                gray,
-                0,
-                255,
-                cv2.THRESH_BINARY
-                + cv2.THRESH_OTSU
-            )
-
-            versions.append(
-                (
-                    "otsu",
-                    otsu
-                )
-            )
-
-            # ----------------------------------------------
-            # Inverted Otsu
-            # ----------------------------------------------
-
-            versions.append(
-                (
-                    "inverted",
-                    cv2.bitwise_not(
-                        otsu
-                    )
-                )
-            )
-
-            # ----------------------------------------------
-            # Adaptive threshold
-            # ----------------------------------------------
-
-            adaptive = cv2.adaptiveThreshold(
-                gray,
-                255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY,
-                31,
-                8
-            )
-
-            versions.append(
-                (
-                    "adaptive",
-                    adaptive
-                )
-            )
-
-            # --------------------------------------------------
-            # Try OCR on each processed image
-            # --------------------------------------------------
-
-            for version_name, version in versions:
-
-                # PSM 6 = block of text
-                # PSM 7 = single text line
-                for psm in [6, 7]:
-
-                    text = pytesseract.image_to_string(
-                        version,
-                        config=f"--psm {psm}"
-                    ).strip()
-
-                    print(
-                        f"{region_name} "
-                        f"| {version_name} "
-                        f"| PSM {psm}: "
-                        f"{repr(text)}"
-                    )
-
-                    # ------------------------------------------
-                    # Best case
-                    #
-                    # 44/102
-                    # 193/182
-                    # ------------------------------------------
-
-                    exact_matches = re.findall(
-                        r"(?<!\d)"
-                        r"(\d{1,4})"
-                        r"\s*[/|]\s*"
-                        r"(\d{1,4})"
-                        r"(?!\d)",
-                        text
-                    )
-
-                    for first, second in exact_matches:
-
-                        exact_results.append(
-                            {
-                                "card_number": first,
-                                "set_total": second,
-                                "region": region_name
-                            }
-                        )
-
-                    # ------------------------------------------
-                    # Imperfect OCR
-                    #
-                    # 44,102
-                    # 44.102
-                    # 193,182
-                    # ------------------------------------------
-
-                    loose_matches = re.findall(
-                        r"(?<!\d)"
-                        r"(\d{1,4})"
-                        r"\s*[,.:;]\s*"
-                        r"(\d{1,4})"
-                        r"(?!\d)",
-                        text
-                    )
-
-                    for first, second in loose_matches:
-
-                        possible_results.append(
-                            {
-                                "card_number": first,
-                                "set_total": second,
-                                "region": region_name
-                            }
-                        )
-
-        # --------------------------------------------------
-        # Exact collector-number matches
-        #
-        # Instead of trusting the first OCR result we see,
-        # choose the result that appeared most often.
-        # --------------------------------------------------
-
-        if exact_results:
-
-            pair_counts = {}
-
-            for result in exact_results:
-
-                pair = (
-                    result["card_number"],
-                    result["set_total"]
-                )
-
-                pair_counts[pair] = (
-                    pair_counts.get(
-                        pair,
-                        0
-                    ) + 1
-                )
-
-            best_pair = max(
-                pair_counts,
-                key=pair_counts.get
-            )
-
-            card_number = best_pair[0]
-            set_total = best_pair[1]
-
-            print()
-            print(
-                "Best collector number:",
-                f"{card_number}/{set_total}"
-            )
-
-            print(
-                "Detected",
-                pair_counts[best_pair],
-                "times"
-            )
-
-            return {
-                "card_number": card_number,
-                "set_total": set_total,
-                "exact": True
-            }
-
-        # --------------------------------------------------
-        # Loose OCR fallback
-        #
-        # If slash recognition failed, use the denominator
-        # that OCR saw most consistently.
-        # --------------------------------------------------
-
-        if possible_results:
-
-            denominator_counts = {}
-
-            for result in possible_results:
-
-                denominator = result[
-                    "set_total"
-                ]
-
-                denominator_counts[
-                    denominator
-                ] = (
-                    denominator_counts.get(
-                        denominator,
-                        0
-                    ) + 1
-                )
-
-            best_denominator = max(
-                denominator_counts,
-                key=denominator_counts.get
-            )
-
-            print()
-            print(
-                "Trusted set total:",
-                best_denominator
-            )
-
-            return {
-                "card_number": None,
-                "set_total": best_denominator,
-                "exact": False
-            }
-
-        print()
-        print(
-            "No collector number detected."
-        )
-
-        return None
-
-    # --------------------------------------------------
-    # Load Set Printed Totals
-    # --------------------------------------------------
-
-    def load_set_totals(self):
-        set_totals = {}
-
-        try:
-
-            with open(
-                SETS_PATH,
-                "r",
-                encoding="utf-8"
-            ) as file:
-
-                sets = json.load(
-                    file
-                )
-
-            for pokemon_set in sets:
-
-                set_id = pokemon_set.get(
-                    "id"
-                )
-
-                printed_total = pokemon_set.get(
-                    "printedTotal"
-                )
-
-                if (
-                    set_id
-                    and printed_total is not None
-                ):
-
-                    set_totals[
-                        set_id
-                    ] = str(
-                        printed_total
-                    )
-
-        except Exception as error:
-
-            print(
-                "Could not load set totals:",
-                error
-            )
-
-        return set_totals
-
-    # --------------------------------------------------
-    # Download Official Card Image
-    # --------------------------------------------------
-
-    def download_card_image(
-        self,
-        card_id,
-        image_url
-    ):
-        if not image_url:
-            return None
-
-        # Make a safe filename
-        safe_card_id = card_id.replace(
-            "/",
-            "_"
-        )
-
-        cache_path = os.path.join(
-            IMAGE_CACHE_DIR,
-            f"{safe_card_id}.png"
+            self.image_label,
+            stretch=1
         )
 
         # ----------------------------------------------
-        # Use cached image if we already downloaded it
+        # Status
         # ----------------------------------------------
 
-        if os.path.exists(cache_path):
-
-            try:
-                print(
-                    f"CACHE HIT: {card_id}"
-                )
-
-                image = Image.open(
-                    cache_path
-                )
-
-                image.load()
-
-                return image
-
-            except Exception as error:
-
-                print(
-                    f"Cache error for {card_id}:",
-                    error
-                )
-
-                # Delete corrupted cache file
-                try:
-                    os.remove(
-                        cache_path
-                    )
-                except Exception:
-                    pass
-
-        # ----------------------------------------------
-        # Not cached yet - download it
-        # ----------------------------------------------
-
-        try:
-
-            print(
-                f"DOWNLOADING: {card_id}"
-            )
-
-            response = requests.get(
-                image_url,
-                timeout=10
-            )
-
-            response.raise_for_status()
-
-            image = Image.open(
-                io.BytesIO(
-                    response.content
-                )
-            )
-
-            image.load()
-
-            # Save a local copy
-            image.save(
-                cache_path,
-                format="PNG"
-            )
-
-            return image
-
-        except Exception as error:
-
-            print(
-                f"Could not download {card_id}:",
-                error
-            )
-
-            return None
-
-    def get_orb_descriptors(self, image):
-        try:
-            image_array = np.array(
-                image.convert("RGB")
-            )
-
-            gray = cv2.cvtColor(
-                image_array,
-                cv2.COLOR_RGB2GRAY
-            )
-
-            gray = cv2.resize(
-                gray,
-                (400, 560)
-            )
-
-            orb = cv2.ORB_create(
-                nfeatures=2000
-            )
-
-            keypoints, descriptors = (
-                orb.detectAndCompute(
-                    gray,
-                    None
-                )
-            )
-
-            return descriptors
-
-        except Exception as error:
-            print(
-                "ORB descriptor error:",
-                error
-            )
-
-            return None
-
-    def get_cached_card_descriptors(
-        self,
-        card_id,
-        image_url
-    ):
-        safe_card_id = card_id.replace(
-            "/",
-            "_"
+        self.status_label = QLabel(
+            "Status: Waiting for image"
         )
 
-        feature_path = os.path.join(
-            FEATURE_CACHE_DIR,
-            f"{safe_card_id}.npz"
-        )
-
-        # ----------------------------------------------
-        # Load cached ORB descriptors
-        # ----------------------------------------------
-
-        if os.path.exists(feature_path):
-
-            try:
-                print(
-                    f"FEATURE CACHE HIT: {card_id}"
-                )
-
-                data = np.load(
-                    feature_path
-                )
-
-                return data[
-                    "descriptors"
-                ]
-
-            except Exception as error:
-
-                print(
-                    f"Feature cache error "
-                    f"for {card_id}:",
-                    error
-                )
-
-                # Remove corrupted cache file
-                try:
-                    os.remove(
-                        feature_path
-                    )
-                except Exception:
-                    pass
-
-        # ----------------------------------------------
-        # No feature cache yet
-        # ----------------------------------------------
-
-        print(
-            f"BUILDING FEATURES: {card_id}"
-        )
-
-        official_image = (
-            self.download_card_image(
-                card_id,
-                image_url
-            )
-        )
-
-        if official_image is None:
-            return None
-
-        descriptors = (
-            self.get_orb_descriptors(
-                official_image
-            )
-        )
-
-        if descriptors is None:
-            return None
-
-        # Save descriptors for future scans
-        try:
-            np.savez_compressed(
-                feature_path,
-                descriptors=descriptors
-            )
-
-        except Exception as error:
-            print(
-                f"Could not save feature cache "
-                f"for {card_id}:",
-                error
-            )
-
-        return descriptors
-
-    def compare_descriptors(
-        self,
-        scanned_descriptors,
-        official_descriptors
-    ):
-        if (
-            scanned_descriptors is None
-            or official_descriptors is None
-        ):
-            return 0
-
-        try:
-            matcher = cv2.BFMatcher(
-                cv2.NORM_HAMMING
-            )
-
-            matches = matcher.knnMatch(
-                scanned_descriptors,
-                official_descriptors,
-                k=2
-            )
-
-            good_matches = []
-
-            for match_pair in matches:
-
-                if len(match_pair) < 2:
-                    continue
-
-                first, second = match_pair
-
-                if first.distance < (
-                    0.75 * second.distance
-                ):
-                    good_matches.append(
-                        first
-                    )
-
-            score = min(
-                len(good_matches) * 2,
-                100
-            )
-
-            return score
-
-        except Exception as error:
-            print(
-                "Descriptor comparison error:",
-                error
-            )
-
-            return 0
-
-    # --------------------------------------------------
-    # Identify Card
-    # --------------------------------------------------
-
-    def identify_card(self):
-        if self.selected_image_path is None:
-
-            QMessageBox.warning(
-                self,
-                "No Image",
-                "Please choose a card image first."
-            )
-
-            return
-
-        self.detected_label.setText(
-            "Detected Card: Scanning..."
-        )
-
-        self.detected_card = None
-        self.add_button.setEnabled(False)
-
-        try:
-
-            image = Image.open(
-                self.selected_image_path
-            )
-
-            image = self.normalize_card_image(
-                image
-            )
-
-            width, height = image.size
-
-             # ------------------------------------------
-            # Scanner 2.0 - Name Crop Diagnostics
-            # ------------------------------------------
-
-            from pathlib import Path
-
-            debug_dir = Path("data/scans/debug")
-            debug_dir.mkdir(
-                parents=True,
-                exist_ok=True
-            )
-
-            name_regions = {
-                "name_focused": (
-                    0.15, 0.09, 0.62, 0.20
-                ),
-                "name_focused_wide": (
-                    0.10, 0.07, 0.75, 0.23
-                ),
-                "upper_left": (
-                    0.08, 0.06, 0.78, 0.27
-                )
-            }
-
-            print()
-            print("NAME CROP DIAGNOSTICS")
-
-            for region_name, coordinates in name_regions.items():
-
-                x1, y1, x2, y2 = coordinates
-
-                crop = image.crop((
-                    int(width * x1),
-                    int(height * y1),
-                    int(width * x2),
-                    int(height * y2)
-                ))
-
-                crop.save(
-                    debug_dir / f"{region_name}.png"
-                )
-
-                # Convert PIL image to OpenCV
-                crop_cv = np.array(crop)
-
-                gray = cv2.cvtColor(
-                    crop_cv,
-                    cv2.COLOR_RGB2GRAY
-                )
-
-                gray = cv2.resize(
-                    gray,
-                    None,
-                    fx=5,
-                    fy=5,
-                    interpolation=cv2.INTER_CUBIC
-                )
-
-                # --------------------------------------
-                # Create multiple OCR versions
-                # --------------------------------------
-
-                _, otsu = cv2.threshold(
-                    gray,
-                    0,
-                    255,
-                    cv2.THRESH_BINARY
-                    + cv2.THRESH_OTSU
-                )
-
-                _, inverted = cv2.threshold(
-                    gray,
-                    0,
-                    255,
-                    cv2.THRESH_BINARY_INV
-                    + cv2.THRESH_OTSU
-                )
-
-                adaptive = cv2.adaptiveThreshold(
-                    gray,
-                    255,
-                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    cv2.THRESH_BINARY,
-                    31,
-                    11
-                )
-
-                versions = {
-                    "gray": gray,
-                    "otsu": otsu,
-                    "inverted": inverted,
-                    "adaptive": adaptive
-                }
-
-                # Save them so we can inspect them
-                for version_name, version_image in versions.items():
-
-                    cv2.imwrite(
-                        str(
-                            debug_dir
-                            / (
-                                f"{region_name}_"
-                                f"{version_name}.png"
-                            )
-                        ),
-                        version_image
-                    )
-
-                print()
-                print(
-                    f"NAME REGION: {region_name}"
-                )
-
-                # --------------------------------------
-                # Try several Tesseract modes
-                # --------------------------------------
-
-                for version_name, version_image in versions.items():
-
-                    for psm in (7, 8, 11, 13):
-
-                        config = (
-                            f"--oem 3 --psm {psm} "
-                            "-c "
-                            "tessedit_char_whitelist="
-                            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                            "abcdefghijklmnopqrstuvwxyz"
-                            "'-"
-                        )
-
-                        text = (
-                            pytesseract.image_to_string(
-                                version_image,
-                                config=config
-                            )
-                            .strip()
-                        )
-
-                        print(
-                            f"{version_name} "
-                            f"PSM {psm}: "
-                            f"{repr(text)}"
-                        )
-
-            # ------------------------------------------
-            # Existing card-name OCR
-            # ------------------------------------------
-
-            top_crop = image.crop(
-                (
-                    int(width * 0.05),
-                    int(height * 0.02),
-                    int(width * 0.95),
-                    int(height * 0.20)
-                )
-            )
-
-            # ------------------------------------------
-            # Top section for card-name OCR
-            # ------------------------------------------
-
-            top_crop = image.crop(
-                (
-                    int(width * 0.05),
-                    int(height * 0.02),
-                    int(width * 0.95),
-                    int(height * 0.20)
-                )
-            )
-
-            top_processed = (
-                self.prepare_image_for_ocr(
-                    top_crop
-                )
-            )
-
-            top_text = (
-                pytesseract.image_to_string(
-                    top_processed,
-                    config="--psm 6"
-                )
-            )
-
-            print()
-            print("----------------------------")
-            print("TOP OCR TEXT")
-            print("----------------------------")
-            print(top_text)
-            print("----------------------------")
-
-            # ------------------------------------------
-            # Scanner 2.0 - Name Recognition Test
-            # ------------------------------------------
-
-            all_card_names = get_all_card_names()
-
-            top_text_lower = top_text.lower()
-
-            # First, look for card names that appear
-            # directly in the OCR text.
-
-            direct_matches = []
-
-            for name in all_card_names:
-
-                if name.lower() in top_text_lower:
-
-                    direct_matches.append(name)
-
-            # Prefer longer names to help distinguish
-            # names such as Bulbasaur and
-            # Erika's Bulbasaur.
-
-            direct_matches.sort(
-                key=len,
-                reverse=True
-            )
-
-            # Also calculate fuzzy matches to handle
-            # small OCR spelling mistakes.
-
-            fuzzy_matches = []
-
-            for name in all_card_names:
-
-                score = fuzz.partial_ratio(
-                    name.lower(),
-                    top_text_lower
-                )
-
-                fuzzy_matches.append(
-                    (name, score)
-                )
-
-            fuzzy_matches.sort(
-                key=lambda result: result[1],
-                reverse=True
-            )
-
-            print()
-            print("----------------------------")
-            print("NAME RECOGNITION TEST")
-            print("----------------------------")
-
-            print("Direct matches:")
-
-            for name in direct_matches[:5]:
-                print(name)
-
-            print()
-            print("Top fuzzy matches:")
-
-            for name, score in fuzzy_matches[:10]:
-                print(
-                    name,
-                    round(score, 1)
-                )
-
-            
-
-        except Exception as error:
-
-            QMessageBox.critical(
-                self,
-                "OCR Error",
-                str(error)
-            )
-
-            self.detected_label.setText(
-                "Detected Card: OCR failed"
-            )
-
-            return
-
-        # --------------------------------------------------
-        # Read Collector Number / Set Total
-        # --------------------------------------------------
-
-        collector_result = (
-            self.read_collector_number(
-                image
-            )
-        )
-
-        if collector_result is None:
-
-            QMessageBox.warning(
-                self,
-                "Card Number Not Found",
-                "The scanner could not reliably "
-                "read the collector number.\n\n"
-                "Check the PowerShell OCR output."
-            )
-
-            self.detected_label.setText(
-                "Detected Card: "
-                "Could not read card number"
-            )
-
-            return
-
-        card_number = collector_result[
-            "card_number"
-        ]
-
-        set_total = collector_result[
-            "set_total"
-        ]
-
-        exact_number = collector_result[
-            "exact"
-        ]
-
-        # --------------------------------------------------
-        # Normalize numeric collector values
-        #
-        # Example:
-        # "094" -> "94"
-        # "007" -> "7"
-        # --------------------------------------------------
-
-        if card_number and card_number.isdigit():
-            card_number = str(
-                int(card_number)
-            )
-
-        if set_total and set_total.isdigit():
-            set_total = str(
-                int(set_total)
-            )
-
-        print()
-        print("----------------------------")
-        print("COLLECTOR RESULT")
-        print("----------------------------")
-        print(
-            "Detected card number:",
-            card_number
-        )
-        print(
-            "Detected set total:",
-            set_total
-        )
-        print(
-            "Exact number reading:",
-            exact_number
-        )
-
-        # --------------------------------------------------
-        # Find Sets With This Printed Total
-        # --------------------------------------------------
-
-        set_totals = (
-            self.load_set_totals()
-        )
-
-        matching_set_ids = [
-            set_id
-            for set_id, total
-            in set_totals.items()
-            if total == set_total
-        ]
-
-        print()
-        print(
-            "Sets matching printed total:",
-            matching_set_ids
-        )
-
-        # --------------------------------------------------
-        # Build Candidate List
-        # --------------------------------------------------
-
-        if matching_set_ids:
-
-            # ----------------------------------------------
-            # Best case:
-            # collector number + set total both worked
-            # ----------------------------------------------
-
-            if exact_number and card_number:
-
-                print(
-                    "Using exact collector-number "
-                    "and set-total search."
-                )
-
-                candidates = (
-                    get_cards_by_number(
-                        card_number
-                    )
-                )
-
-                candidates = [
-                    card
-                    for card in candidates
-                    if card["set_id"]
-                    in matching_set_ids
-                ]
-
-            # ----------------------------------------------
-            # We only trust the set total
-            # ----------------------------------------------
-
-            else:
-
-                print(
-                    "Collector number was unclear."
-                )
-
-                print(
-                    "Using cards from matching set(s) "
-                    "for visual comparison."
-                )
-
-                candidates = (
-                    get_cards_by_set_ids(
-                        matching_set_ids
-                    )
-                )
-
-        else:
-
-            # --------------------------------------------------
-            # Set total OCR failed.
-            #
-            # Example:
-            # actual card = 085/086
-            # OCR reads   = 85/4
-            #
-            # If we still have a card number, search by that
-            # number and let visual/name matching choose.
-            # --------------------------------------------------
-
-            print()
-            print(
-                "Set total does not match a known set."
-            )
-
-            if card_number:
-
-                print(
-                    f"Falling back to card number "
-                    f"#{card_number}."
-                )
-
-                candidates = (
-                    get_cards_by_number(
-                        card_number
-                    )
-                )
-
-            else:
-
-                QMessageBox.warning(
-                    self,
-                    "Card Not Identified",
-                    "The scanner could not reliably "
-                    "read either the card number or "
-                    "the set information."
-                )
-
-                self.detected_label.setText(
-                    "Detected Card: "
-                    "Could not identify collector number"
-                )
-
-                return
-
-        print()
-        print(
-            "Visual candidates:",
-            len(candidates)
-        )
-
-        if not candidates:
-
-            self.detected_label.setText(
-                "Detected Card: "
-                "No candidates found"
-            )
-
-            QMessageBox.warning(
-                self,
-                "No Candidates",
-                "The set was detected, but "
-                "there were no cards available "
-                "to compare."
-            )
-
-            return
-
-        # --------------------------------------------------
-        # Compare Candidate Cards
-        # --------------------------------------------------
-
-        best_card = None
-        best_score = -1
-        best_visual_score = -1
-
-        top_text_lower = (
-            top_text.lower()
-        )
-
-        # --------------------------------------------------
-# Calculate scanned card features ONCE
-# --------------------------------------------------
-
-        print()
-        print(
-            "Calculating scanned card features..."
-        )
-
-        scanned_descriptors = (
-            self.get_orb_descriptors(
-                image
-            )
-        )
-
-        if scanned_descriptors is None:
-
-            self.detected_label.setText(
-                "Detected Card: "
-                "Could not process scanned image"
-            )
-
-            QMessageBox.warning(
-                self,
-                "Image Processing Error",
-                "The scanner could not calculate "
-                "visual features for this image."
-            )
-
-            return
-
-        print(
-            "Scanned card features ready."
-        )
-
-        print()
-        print("----------------------------")
-        print("CANDIDATE COMPARISON")
-        print("----------------------------")
-
-        for card in candidates:
-
-            # ------------------------------------------
-            # Name OCR score
-            # ------------------------------------------
-
-            name_score = (
-                fuzz.partial_ratio(
-                    card["name"].lower(),
-                    top_text_lower
-                )
-            )
-
-            # ------------------------------------------
-            # Visual score
-            # ------------------------------------------
-
-            visual_score = 0
-
-            official_descriptors = (
-                self.get_cached_card_descriptors(
-                    card["id"],
-                    card["image_url"]
-                )
-            )
-
-            if official_descriptors is not None:
-
-                visual_score = (
-                    self.compare_descriptors(
-                        scanned_descriptors,
-                        official_descriptors
-                    )
-                )
-
-            # ------------------------------------------
-            # Combined score
-            #
-            # Visual match matters much more
-            # than OCR name matching.
-            # ------------------------------------------
-
-            combined_score = (
-                visual_score * 0.75
-                + name_score * 0.25
-            )
-
-            print()
-            print(
-                card["name"]
-            )
-
-            print(
-                "Set:",
-                card["set_id"]
-            )
-
-            print(
-                "Number:",
-                card["number"]
-            )
-
-            print(
-                "Name OCR:",
-                round(
-                    name_score,
-                    1
-                )
-            )
-
-            print(
-                "Visual:",
-                round(
-                    visual_score,
-                    1
-                )
-            )
-
-            print(
-                "Combined:",
-                round(
-                    combined_score,
-                    1
-                )
-            )
-
-            if combined_score > best_score:
-
-                best_score = combined_score
-                best_visual_score = visual_score
-                best_card = card
-
-        # --------------------------------------------------
-        # No Result
-        # --------------------------------------------------
-
-        if best_card is None:
-
-            self.detected_label.setText(
-                "Detected Card: "
-                "No match found"
-            )
-
-            return
-
-        # --------------------------------------------------
-        # Scanner 2.0 Confidence Safety
-        # --------------------------------------------------
-
-        MIN_COMBINED_SCORE = 70
-        MIN_VISUAL_SCORE = 60
-
-        if (
-            best_score < MIN_COMBINED_SCORE
-            or best_visual_score < MIN_VISUAL_SCORE
-        ):
-
-            print()
-            print("----------------------------")
-            print("LOW CONFIDENCE RESULT")
-            print("----------------------------")
-            print(
-                "Possible card:",
-                best_card["name"]
-            )
-            print(
-                "Combined score:",
-                round(best_score, 1)
-            )
-            print(
-                "Visual score:",
-                round(best_visual_score, 1)
-            )
-
-            self.detected_card = None
-
-            self.detected_label.setText(
-                f"Possible Match - Low Confidence:\n"
-                f"{best_card['name']}\n"
-                f"{best_card['set_id'].upper()} "
-                f"#{best_card['number']}\n"
-                f"Match Score: "
-                f"{best_score:.0f}%\n\n"
-                f"Scanner will not add this card "
-                f"automatically."
-            )
-
-            self.add_button.setEnabled(
-                False
-            )
-
-            return
-
-        # --------------------------------------------------
-        # Card Identified
-        # --------------------------------------------------
-
-        self.detected_card = best_card
-
-        set_display = (
-            best_card["set_id"].upper()
-            if best_card["set_id"]
-            else "UNKNOWN"
-        )
-
-        collector_display = ""
-
-        if card_number:
-            collector_display = (
-                f"{card_number}/{set_total}"
-            )
-        else:
-            collector_display = (
-                f"?/{set_total}"
-            )
-
-        self.detected_label.setText(
-            f"Detected Card:\n"
-            f"{best_card['name']}\n"
-            f"{set_display} "
-            f"#{best_card['number']}\n"
-            f"Collector Reading: "
-            f"{collector_display}\n"
-            f"Match Score: "
-            f"{best_score:.0f}%"
-        )
-
-        self.add_button.setEnabled(
+        self.status_label.setWordWrap(
             True
         )
 
-    # --------------------------------------------------
-    # Add Card to Inventory
-    # --------------------------------------------------
-
-    def add_to_inventory(self):
-        if self.detected_card is None:
-            return
-
-        card_id = self.detected_card[
-            "id"
-        ]
-
-        increase_inventory(
-            card_id
+        layout.addWidget(
+            self.status_label
         )
 
-        quantity = (
-            get_inventory_quantity(
-                card_id
-            )
+        # ----------------------------------------------
+        # Buttons
+        # ----------------------------------------------
+
+        buttons = QHBoxLayout()
+
+        self.choose_button = QPushButton(
+            "Choose Image"
         )
 
-        QMessageBox.information(
-            self,
-            "Inventory Updated",
-            f"{self.detected_card['name']} "
-            f"was added to your inventory.\n\n"
-            f"Owned: {quantity}"
+        self.choose_button.clicked.connect(
+            self.choose_image
         )
 
-        self.add_button.setEnabled(
+        buttons.addWidget(
+            self.choose_button
+        )
+
+        self.scan_button = QPushButton(
+            "Scan Card"
+        )
+
+        self.scan_button.setEnabled(
             False
         )
 
-        # Resume webcam scanner after adding
-        # this card.
+        self.scan_button.clicked.connect(
+            self.scan_card
+        )
 
-        if (
-            self.camera is not None
-            and self.camera.isOpened()
-        ):
-            self.waiting_for_card_removal = True
-            self.removal_frame_count = 0
-            self.previous_roi_gray = None
-            self.stable_frame_count = 0
+        buttons.addWidget(
+            self.scan_button
+        )
 
-            self.detected_label.setText(
-                f"{self.detected_card['name']} added.\n"
-                f"Remove the card to scan the next one."
+        self.home_button = QPushButton(
+            "Back Home"
+        )
+
+        self.home_button.clicked.connect(
+            self.go_home
+        )
+
+        buttons.addWidget(
+            self.home_button
+        )
+
+        layout.addLayout(
+            buttons
+        )
+
+    # ==================================================
+    # IMAGE LOADING
+    # ==================================================
+
+    def choose_image(self):
+        file_path, _ = (
+            QFileDialog.getOpenFileName(
+                self,
+                "Choose Pokémon Card Image",
+                "",
+                (
+                    "Card Images "
+                    "(*.png *.jpg *.jpeg "
+                    "*.bmp *.webp "
+                    "*.heic *.heif)"
+                )
+            )
+        )
+
+        if not file_path:
+            return
+
+        try:
+            image = Image.open(
+                file_path
             )
 
-            self.camera_timer.start(30)
-        else:
-            self.detected_label.setText(
-                f"{self.detected_card['name']} added to inventory."
+            # Fix iPhone rotation metadata.
+            image = ImageOps.exif_transpose(
+                image
             )
 
-    # --------------------------------------------------
-    # Navigation
-    # --------------------------------------------------
+            image = image.convert(
+                "RGB"
+            )
 
-    def go_home(self):
-        self.stop_camera()
-        self.window().open_home()
+            self.selected_image_path = (
+                file_path
+            )
 
-    def start_camera(self):
-        if self.camera is not None:
-            self.stop_camera()
+            self.selected_image = image
+            self.normalized_image = None
 
-        self.camera = cv2.VideoCapture(0)
+            self.show_image(
+                image
+            )
 
-        if not self.camera.isOpened():
+            self.status_label.setText(
+                "Status: Image loaded. "
+                "Ready to scan."
+            )
 
-            self.camera = None
+            self.scan_button.setEnabled(
+                True
+            )
+
+            print()
+            print(
+                "============================"
+            )
+            print(
+                "SCANNER 2.0 - IMAGE LOADED"
+            )
+            print(
+                "============================"
+            )
+            print(
+                "File:",
+                file_path
+            )
+            print(
+                "Size:",
+                image.size
+            )
+
+        except Exception as error:
+
+            self.selected_image_path = None
+            self.selected_image = None
+            self.normalized_image = None
+
+            self.scan_button.setEnabled(
+                False
+            )
 
             QMessageBox.warning(
                 self,
-                "Camera Error",
-                "The webcam could not be opened."
-            )
-
-            return
-
-        # Request HD webcam resolution
-        self.camera.set(
-            cv2.CAP_PROP_FRAME_WIDTH,
-            1920
-        )
-
-        self.camera.set(
-            cv2.CAP_PROP_FRAME_HEIGHT,
-            1080
-        )
-
-        actual_width = self.camera.get(
-            cv2.CAP_PROP_FRAME_WIDTH
-        )
-
-        actual_height = self.camera.get(
-            cv2.CAP_PROP_FRAME_HEIGHT
-        )
-
-        print(
-            "Camera resolution:",
-            actual_width,
-            "x",
-            actual_height
-        )
-
-        self.previous_roi_gray = None
-        self.stable_frame_count = 0
-        self.waiting_for_card_removal = False
-        self.removal_frame_count = 0
-        self.scanning_in_progress = False
-        self.camera_warmup_count = 0
-        self.scanner_armed = False
-
-        self.camera_timer.start(30)
-
-        self.detected_label.setText(
-            "Camera warming up...\n"
-            "Wait for the scanner to become ready."
-        )
-
-    def normalize_card_image(self, image):
-        # Convert PIL image to OpenCV
-        image_cv = np.array(
-            image.convert("RGB")
-        )
-
-        image_cv = cv2.cvtColor(
-            image_cv,
-            cv2.COLOR_RGB2BGR
-        )
-
-        gray = cv2.cvtColor(
-            image_cv,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        blurred = cv2.GaussianBlur(
-            gray,
-            (5, 5),
-            0
-        )
-
-        edges = cv2.Canny(
-            blurred,
-            50,
-            150
-        )
-
-        contours, _ = cv2.findContours(
-            edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        contours = sorted(
-            contours,
-            key=cv2.contourArea,
-            reverse=True
-        )
-
-        card_contour = None
-
-        for contour in contours[:10]:
-
-            perimeter = cv2.arcLength(
-                contour,
-                True
-            )
-
-            approx = cv2.approxPolyDP(
-                contour,
-                0.02 * perimeter,
-                True
-            )
-
-            if len(approx) == 4:
-
-                area = cv2.contourArea(
-                    approx
+                "Image Error",
+                (
+                    "The image could not "
+                    "be opened.\n\n"
+                    f"{error}"
                 )
-
-                image_area = (
-                    image_cv.shape[0]
-                    * image_cv.shape[1]
-                )
-
-                # Ignore tiny rectangles
-                if area > image_area * 0.25:
-                    card_contour = approx
-                    break
-
-        # If we cannot confidently find the
-        # card border, use the original image.
-        if card_contour is None:
-
-            print(
-                "Card border not detected. "
-                "Using original image."
             )
 
-            return image
+    # ==================================================
+    # IMAGE DISPLAY
+    # ==================================================
 
-        points = card_contour.reshape(
-            4,
-            2
-        ).astype("float32")
+    def show_image(self, image):
+        image = image.convert(
+            "RGB"
+        )
 
-        # Sort corners
+        width, height = (
+            image.size
+        )
+
+        data = image.tobytes(
+            "raw",
+            "RGB"
+        )
+
+        qimage = QImage(
+            data,
+            width,
+            height,
+            width * 3,
+            QImage.Format.Format_RGB888
+        )
+
+        # Qt gets its own memory copy.
+        qimage = qimage.copy()
+
+        pixmap = QPixmap.fromImage(
+            qimage
+        )
+
+        pixmap = pixmap.scaled(
+            self.image_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        self.image_label.setPixmap(
+            pixmap
+        )
+
+    # ==================================================
+    # CORNER ORDERING
+    # ==================================================
+
+    def order_points(
+        self,
+        points
+    ):
+        ordered = np.zeros(
+            (4, 2),
+            dtype="float32"
+        )
+
         point_sum = points.sum(
             axis=1
         )
 
-        point_diff = np.diff(
+        point_difference = np.diff(
             points,
             axis=1
         ).flatten()
 
-        top_left = points[
-            np.argmin(point_sum)
+        # Top-left
+        ordered[0] = points[
+            np.argmin(
+                point_sum
+            )
         ]
 
-        bottom_right = points[
-            np.argmax(point_sum)
+        # Top-right
+        ordered[1] = points[
+            np.argmin(
+                point_difference
+            )
         ]
 
-        top_right = points[
-            np.argmin(point_diff)
+        # Bottom-right
+        ordered[2] = points[
+            np.argmax(
+                point_sum
+            )
         ]
 
-        bottom_left = points[
-            np.argmax(point_diff)
+        # Bottom-left
+        ordered[3] = points[
+            np.argmax(
+                point_difference
+            )
         ]
 
-        source = np.array(
-            [
-                top_left,
-                top_right,
-                bottom_right,
-                bottom_left
-            ],
-            dtype="float32"
+        return ordered
+
+    # ==================================================
+    # BARE CARD DETECTION
+    # ==================================================
+
+    def detect_bare_card(
+        self,
+        image
+    ):
+        rgb = np.array(
+            image.convert("RGB")
         )
 
+        original_height, original_width = (
+            rgb.shape[:2]
+        )
+
+        # ----------------------------------------------
+        # Work on a smaller image for detection.
+        # ----------------------------------------------
+
+        max_height = 1200
+
+        if original_height > max_height:
+
+            scale = (
+                max_height
+                / original_height
+            )
+
+            small_width = int(
+                original_width
+                * scale
+            )
+
+            small = cv2.resize(
+                rgb,
+                (
+                    small_width,
+                    max_height
+                ),
+                interpolation=cv2.INTER_AREA
+            )
+
+        else:
+
+            scale = 1.0
+
+            small = rgb.copy()
+
+        gray = cv2.cvtColor(
+            small,
+            cv2.COLOR_RGB2GRAY
+        )
+
+        gray = cv2.GaussianBlur(
+            gray,
+            (7, 7),
+            0
+        )
+
+        image_area = (
+            small.shape[0]
+            * small.shape[1]
+        )
+
+        best_box = None
+        best_score = -1
+
+        # ----------------------------------------------
+        # Try several brightness thresholds.
+        #
+        # Bare cards should usually separate from
+        # a light desk / paper / scanning background.
+        # ----------------------------------------------
+
+        thresholds = (
+            90,
+            110,
+            130,
+            150,
+            170,
+            190,
+            210,
+        )
+
+        for threshold_value in thresholds:
+
+            _, mask = cv2.threshold(
+                gray,
+                threshold_value,
+                255,
+                cv2.THRESH_BINARY_INV
+            )
+
+            # Join fragmented regions inside
+            # the Pokémon card.
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (17, 17)
+            )
+
+            mask = cv2.morphologyEx(
+                mask,
+                cv2.MORPH_CLOSE,
+                kernel
+            )
+
+            contours, _ = cv2.findContours(
+                mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            for contour in contours:
+
+                contour_area = cv2.contourArea(
+                    contour
+                )
+
+                # Ignore tiny shapes immediately.
+                if contour_area < (
+                    image_area * 0.05
+                ):
+                    continue
+
+                rect = cv2.minAreaRect(
+                    contour
+                )
+
+                rect_width, rect_height = (
+                    rect[1]
+                )
+
+                if (
+                    rect_width <= 0
+                    or rect_height <= 0
+                ):
+                    continue
+
+                short_side = min(
+                    rect_width,
+                    rect_height
+                )
+
+                long_side = max(
+                    rect_width,
+                    rect_height
+                )
+
+                ratio = (
+                    short_side
+                    / long_side
+                )
+
+                rect_area = (
+                    rect_width
+                    * rect_height
+                )
+
+                area_ratio = (
+                    rect_area
+                    / image_area
+                )
+
+                # Pokémon cards are about:
+                #
+                # 2.5 / 3.5 = 0.714
+                #
+                # Give perspective distortion
+                # some breathing room.
+                if not (
+                    0.60 <= ratio <= 0.82
+                ):
+                    continue
+
+                # The card should take up a meaningful
+                # amount of the photograph.
+                if not (
+                    0.30 <= area_ratio <= 0.98
+                ):
+                    continue
+
+                # --------------------------------------
+                # Candidate scoring
+                #
+                # Prefer:
+                # 1. ratio close to 0.714
+                # 2. larger card regions
+                # --------------------------------------
+
+                ratio_error = abs(
+                    ratio - 0.714
+                )
+
+                ratio_score = (
+                    1.0 - ratio_error
+                )
+
+                candidate_score = (
+                    ratio_score * 2
+                    + area_ratio
+                )
+
+                print(
+                    f"Threshold "
+                    f"{threshold_value}: "
+                    f"area={area_ratio:.3f}, "
+                    f"ratio={ratio:.3f}, "
+                    f"score="
+                    f"{candidate_score:.3f}"
+                )
+
+                if (
+                    candidate_score
+                    > best_score
+                ):
+
+                    best_score = (
+                        candidate_score
+                    )
+
+                    best_box = (
+                        cv2.boxPoints(
+                            rect
+                        )
+                        .astype(
+                            "float32"
+                        )
+                    )
+
+        if best_box is None:
+
+            return None
+
+        # Convert coordinates back to
+        # the original image.
+        best_box = (
+            best_box
+            / scale
+        )
+
+        return best_box
+
+    # ==================================================
+    # CARD NORMALIZATION
+    # ==================================================
+
+    def normalize_card_image(
+        self,
+        image
+    ):
+        rgb = np.array(
+            image.convert("RGB")
+        )
+
+        card_points = (
+            self.detect_bare_card(
+                image
+            )
+        )
+
+        if card_points is None:
+
+            print()
+            print(
+                "Bare card could "
+                "not be detected."
+            )
+
+            return None
+
+        source = self.order_points(
+            card_points
+        )
+
+        # Standard output size.
         target_width = 750
         target_height = 1050
 
         destination = np.array(
             [
-                [0, 0],
-                [target_width - 1, 0],
+                [
+                    0,
+                    0
+                ],
+                [
+                    target_width - 1,
+                    0
+                ],
                 [
                     target_width - 1,
                     target_height - 1
@@ -2106,18 +676,20 @@ class ScanCardPage(QWidget):
                 [
                     0,
                     target_height - 1
-                ]
+                ],
             ],
             dtype="float32"
         )
 
-        matrix = cv2.getPerspectiveTransform(
-            source,
-            destination
+        matrix = (
+            cv2.getPerspectiveTransform(
+                source,
+                destination
+            )
         )
 
         warped = cv2.warpPerspective(
-            image_cv,
+            rgb,
             matrix,
             (
                 target_width,
@@ -2125,404 +697,150 @@ class ScanCardPage(QWidget):
             )
         )
 
-        warped = cv2.cvtColor(
-            warped,
-            cv2.COLOR_BGR2RGB
-        )
-
         return Image.fromarray(
             warped
         )
 
-    def get_card_roi(self, frame):
-        frame_height, frame_width = frame.shape[:2]
-
-        # Card ratio is roughly 2.5 x 3.5
-        card_height = int(
-            frame_height * 0.82
-        )
-
-        card_width = int(
-            card_height * (2.5 / 3.5)
-        )
-
-        center_x = frame_width // 2
-        center_y = frame_height // 2
-
-        x1 = center_x - card_width // 2
-        x2 = center_x + card_width // 2
-
-        y1 = center_y - card_height // 2
-        y2 = center_y + card_height // 2
-
-        roi = frame[
-            y1:y2,
-            x1:x2
-        ]
-
-        return (
-            roi,
-            x1,
-            y1,
-            x2,
-            y2
-        )
-
-    def card_is_present(self, roi):
-        if roi is None or roi.size == 0:
-            return False
-
-        gray = cv2.cvtColor(
-            roi,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        gray = cv2.GaussianBlur(
-            gray,
-            (5, 5),
-            0
-        )
-
-        edges = cv2.Canny(
-            gray,
-            50,
-            150
-        )
-
-        edge_ratio = (
-            np.count_nonzero(edges)
-            / edges.size
-        )
-
-        # A blank background normally has very
-        # few edges. A Pokemon card has lots.
-        if edge_ratio < 0.02:
-            return False
-
-        return True
-
-    def card_is_stable(self, roi):
-        gray = cv2.cvtColor(
-            roi,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        gray = cv2.resize(
-            gray,
-            (160, 224)
-        )
-
-        gray = cv2.GaussianBlur(
-            gray,
-            (5, 5),
-            0
-        )
-
-        if self.previous_roi_gray is None:
-
-            self.previous_roi_gray = gray
-
-            return False
-
-        difference = cv2.absdiff(
-            gray,
-            self.previous_roi_gray
-        )
-
-        motion_score = np.mean(
-            difference
-        )
-
-        self.previous_roi_gray = gray
-
-        return (
-            motion_score <
-            MOTION_THRESHOLD
-        )
-
-    def update_camera_frame(self):
-        if self.camera is None:
-            return
-
-        success, frame = self.camera.read()
-
-        if not success:
-            return
-
-        self.current_camera_frame = frame.copy()
-
-        (
-            card_roi,
-            x1,
-            y1,
-            x2,
-            y2
-        ) = self.get_card_roi(frame)
-
-        self.current_card_roi = card_roi.copy()
-
-        # --------------------------------------------------
-        # Check whether a card is present
-        # --------------------------------------------------
-
-        card_present = self.card_is_present(
-            card_roi
-        )
-
-        # --------------------------------------------------
-        # Draw guide box
-        # --------------------------------------------------
-
-        cv2.rectangle(
-            frame,
-            (x1, y1),
-            (x2, y2),
-            (0, 255, 0),
-            3
-        )
-
-        # --------------------------------------------------
-        # Camera warm-up
-        # --------------------------------------------------
-
-        if not self.scanner_armed:
-
-            self.camera_warmup_count += 1
-
-            cv2.putText(
-                frame,
-                "Camera warming up...",
-                (x1, max(y1 - 10, 25)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 255),
-                2
-            )
-
-            if (
-                self.camera_warmup_count >=
-                CAMERA_WARMUP_FRAMES
-            ):
-                self.scanner_armed = True
-
-                self.stable_frame_count = 0
-                self.previous_roi_gray = None
-
-                self.detected_label.setText(
-                    "Scanner ready.\n"
-                    "Place a card inside the guide box "
-                    "and hold it still."
-                )
-
-        # --------------------------------------------------
-        # Scanner is armed
-        # --------------------------------------------------
-
-        else:
-
-            cv2.putText(
-                frame,
-                "Place card here",
-                (x1, max(y1 - 10, 25)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2
-            )
-
-            # --------------------------------------------------
-            # Waiting for previous card to be removed
-            # --------------------------------------------------
-
-            if self.waiting_for_card_removal:
-
-                if not card_present:
-
-                    self.removal_frame_count += 1
-
-                    if (
-                        self.removal_frame_count >=
-                        REMOVAL_FRAMES_REQUIRED
-                    ):
-                        self.waiting_for_card_removal = False
-
-                        self.removal_frame_count = 0
-                        self.stable_frame_count = 0
-                        self.previous_roi_gray = None
-
-                        self.detected_label.setText(
-                            "Scanner ready.\n"
-                            "Place the next card "
-                            "inside the guide box."
-                        )
-
-                else:
-                    self.removal_frame_count = 0
-
-            # --------------------------------------------------
-            # Card detected - check stability
-            # --------------------------------------------------
-
-            elif (
-                card_present
-                and not self.scanning_in_progress
-            ):
-
-                if self.card_is_stable(
-                    card_roi
-                ):
-
-                    self.stable_frame_count += 1
-
-                else:
-
-                    self.stable_frame_count = 0
-
-                # ----------------------------------------------
-                # Stable long enough -> automatically capture
-                # ----------------------------------------------
-
-                if (
-                    self.stable_frame_count >=
-                    STABLE_FRAMES_REQUIRED
-                ):
-
-                    self.auto_capture_card(
-                        card_roi
-                    )
-
-                    return
-
-            else:
-
-                self.stable_frame_count = 0
-                self.previous_roi_gray = None
-
-        # --------------------------------------------------
-        # Show Webcam Preview
-        # --------------------------------------------------
-
-        rgb_frame = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
-
-        height, width, channels = (
-            rgb_frame.shape
-        )
-
-        bytes_per_line = (
-            channels * width
-        )
-
-        qimage = QImage(
-            rgb_frame.data,
-            width,
-            height,
-            bytes_per_line,
-            QImage.Format.Format_RGB888
-        )
-
-        pixmap = QPixmap.fromImage(
-            qimage
-        )
-
-        scaled_pixmap = pixmap.scaled(
-            self.image_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-
-        self.image_label.setPixmap(
-            scaled_pixmap
-        )
-
-    def auto_capture_card(self, card_roi):
-        if self.scanning_in_progress:
-            return
-
-        self.scanning_in_progress = True
-        self.stable_frame_count = 0
-
-        # Pause webcam while recognition runs
-        self.camera_timer.stop()
-
-        scan_path = os.path.join(
-            SCAN_DIR,
-            "latest_scan.jpg"
-        )
-
-        success = cv2.imwrite(
-            scan_path,
-            card_roi
-        )
-
-        if not success:
-
-            self.scanning_in_progress = False
+    # ==================================================
+    # SCAN
+    # ==================================================
+
+    def scan_card(self):
+        if self.selected_image is None:
 
             QMessageBox.warning(
                 self,
-                "Capture Error",
-                "The scanner could not save "
-                "the webcam image."
+                "No Image",
+                "Please choose a card "
+                "image first."
             )
-
-            self.camera_timer.start(30)
 
             return
 
-        self.selected_image_path = (
-            scan_path
+        self.status_label.setText(
+            "Status: Detecting bare card..."
         )
 
-        self.detected_card = None
-
-        # Show exactly what was captured
-        pixmap = QPixmap(
-            scan_path
+        normalized = (
+            self.normalize_card_image(
+                self.selected_image
+            )
         )
 
-        scaled_pixmap = pixmap.scaled(
-            self.image_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+        if normalized is None:
+
+            self.status_label.setText(
+                "Status: Bare card could "
+                "not be detected."
+            )
+
+            return
+
+        self.normalized_image = (
+            normalized
         )
 
-        self.image_label.setPixmap(
-            scaled_pixmap
+        matches = find_closest_cards(
+            normalized,
+            self.visual_index,
+            limit=20
         )
 
-        self.detected_label.setText(
-            "Card detected automatically.\n"
-            "Identifying..."
+        self.status_label.setText(
+            "Status: Comparing final candidates..."
         )
 
-        # Use the scanner we've already built
-        self.identify_card()
+        detailed_matches = (
+            rerank_candidates_with_orb(
+                normalized,
+                matches
+            )
+        )
 
-        self.scanning_in_progress = False
+        print()
+        print("============================")
+        print("DETAILED VISUAL MATCHES")
+        print("============================")
 
-    def stop_camera(self):
-        self.camera_timer.stop()
+        for position, card in enumerate(
+            detailed_matches,
+            start=1
+        ):
 
-        if self.camera is not None:
-            self.camera.release()
-            self.camera = None
+            print(
+                f"{position:2}. "
+                f"{card['name']} "
+                f"| {card['set_id']} "
+                f"#{card['number']} "
+                f"| pHash="
+                f"{card['distance']} "
+                f"| ORB="
+                f"{card['orb_score']:.2f}"
+            )
 
-        self.current_camera_frame = None
-        self.current_card_roi = None
-        self.previous_roi_gray = None
+        print()
+        print("============================")
+        print("TOP VISUAL MATCHES")
+        print("============================")
 
-        self.stable_frame_count = 0
-        self.removal_frame_count = 0
+        for position, card in enumerate(
+            matches,
+            start=1
+        ):
+            print(
+                f"{position:2}. "
+                f"{card['name']} "
+                f"| {card['set_id']} "
+                f"#{card['number']} "
+                f"| distance="
+                f"{card['distance']}"
+            )
 
-        self.waiting_for_card_removal = False
-        self.scanning_in_progress = False
+        self.show_image(
+            normalized
+        )
 
-        self.camera_warmup_count = 0
-        self.scanner_armed = False
+        self.status_label.setText(
+            "Status: Card detected "
+            "and normalized."
+        )
 
-    def closeEvent(self, event):
-        self.stop_camera()
-        event.accept()
+        print()
+        print(
+            "============================"
+        )
+        print(
+            "SCANNER 2.0 - NORMALIZATION"
+        )
+        print(
+            "============================"
+        )
+        print(
+            "Original:",
+            self.selected_image.size
+        )
+        print(
+            "Normalized:",
+            normalized.size
+        )
+
+    # ==================================================
+    # HOME
+    # ==================================================
+
+    def go_home(self):
+        window = self.window()
+
+        if hasattr(
+            window,
+            "open_home"
+        ):
+
+            window.open_home()
+
+        elif hasattr(
+            window,
+            "show_home"
+        ):
+
+            window.show_home()

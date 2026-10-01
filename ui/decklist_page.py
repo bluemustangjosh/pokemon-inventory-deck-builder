@@ -32,22 +32,26 @@ class DecklistPage(QWidget):
 
         self.current_deck_id = None
 
-        main_layout = QVBoxLayout()
+        # ==================================================
+        # MAIN LAYOUT
+        # ==================================================
+
+        main_layout = QVBoxLayout(self)
 
         main_layout.setContentsMargins(
-            40,
-            30,
-            40,
-            30
+            20,
+            14,
+            20,
+            14
         )
 
         main_layout.setSpacing(
-            18
+            10
         )
 
-        # --------------------------------------------------
-        # Top Bar
-        # --------------------------------------------------
+        # ==================================================
+        # TOP BAR
+        # ==================================================
 
         top_bar = QHBoxLayout()
 
@@ -56,7 +60,7 @@ class DecklistPage(QWidget):
         )
 
         back_button.setFixedWidth(
-            120
+            110
         )
 
         back_button.clicked.connect(
@@ -69,63 +73,69 @@ class DecklistPage(QWidget):
 
         top_bar.addStretch()
 
-        main_layout.addLayout(
-            top_bar
-        )
-
-        # --------------------------------------------------
-        # Header
-        # --------------------------------------------------
-
         title = QLabel(
             "Deck Checker"
+        )
+
+        title.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
         )
 
         title.setStyleSheet("""
             font-size: 30px;
             font-weight: 700;
+            border: none;
         """)
 
-        main_layout.addWidget(
+        top_bar.addWidget(
             title
         )
 
-        subtitle = QLabel(
-            "Save decklists and compare them against your collection"
+        top_bar.addStretch()
+
+        # Keeps the title truly centered even though
+        # the Back button is on the left.
+        right_spacer = QWidget()
+
+        right_spacer.setFixedWidth(
+            110
         )
 
-        subtitle.setStyleSheet("""
-            color: #9ba3af;
-            font-size: 14px;
-        """)
-
-        main_layout.addWidget(
-            subtitle
+        top_bar.addWidget(
+            right_spacer
         )
 
-        # --------------------------------------------------
-        # Main Content
-        # --------------------------------------------------
+        main_layout.addLayout(
+            top_bar
+        )
+
+        # ==================================================
+        # MAIN CONTENT
+        # ==================================================
 
         content_layout = QHBoxLayout()
 
         content_layout.setSpacing(
-            20
+            18
         )
 
         # ==================================================
-        # LEFT SIDE
-        # Saved Decks
+        # LEFT PANEL
+        # SAVED DECKS
         # ==================================================
 
         saved_panel = QFrame()
 
+        saved_panel.setObjectName(
+            "savedDeckPanel"
+        )
+
         saved_panel.setFixedWidth(
-            280
+            265
         )
 
         saved_panel.setStyleSheet("""
-            QFrame {
+            QFrame#savedDeckPanel {
                 background-color: #1f232c;
                 border: 1px solid #333946;
                 border-radius: 12px;
@@ -137,10 +147,10 @@ class DecklistPage(QWidget):
         )
 
         saved_layout.setContentsMargins(
-            18,
-            18,
-            18,
-            18
+            16,
+            16,
+            16,
+            16
         )
 
         saved_layout.setSpacing(
@@ -152,8 +162,9 @@ class DecklistPage(QWidget):
         )
 
         saved_title.setStyleSheet("""
-            font-size: 20px;
+            font-size: 19px;
             font-weight: 600;
+            border: none;
         """)
 
         saved_layout.addWidget(
@@ -167,7 +178,8 @@ class DecklistPage(QWidget):
         )
 
         saved_layout.addWidget(
-            self.saved_decks_list
+            self.saved_decks_list,
+            stretch=1
         )
 
         new_deck_button = QPushButton(
@@ -213,14 +225,17 @@ class DecklistPage(QWidget):
         )
 
         # ==================================================
-        # RIGHT SIDE
-        # Deck Editor
+        # RIGHT PANEL
         # ==================================================
 
         editor_panel = QFrame()
 
+        editor_panel.setObjectName(
+            "deckEditorPanel"
+        )
+
         editor_panel.setStyleSheet("""
-            QFrame {
+            QFrame#deckEditorPanel {
                 background-color: #1f232c;
                 border: 1px solid #333946;
                 border-radius: 12px;
@@ -233,18 +248,18 @@ class DecklistPage(QWidget):
 
         editor_layout.setContentsMargins(
             22,
+            20,
             22,
-            22,
-            22
+            20
         )
 
         editor_layout.setSpacing(
-            12
+            10
         )
 
-        # --------------------------------------------------
-        # Deck Name
-        # --------------------------------------------------
+        # ==================================================
+        # DECK NAME
+        # ==================================================
 
         deck_name_label = QLabel(
             "Deck Name"
@@ -253,6 +268,7 @@ class DecklistPage(QWidget):
         deck_name_label.setStyleSheet("""
             font-size: 15px;
             font-weight: 600;
+            border: none;
         """)
 
         editor_layout.addWidget(
@@ -269,9 +285,9 @@ class DecklistPage(QWidget):
             self.deck_name_input
         )
 
-        # --------------------------------------------------
-        # Decklist Input
-        # --------------------------------------------------
+        # ==================================================
+        # DECKLIST INPUT
+        # ==================================================
 
         decklist_label = QLabel(
             "Limitless Decklist"
@@ -280,6 +296,8 @@ class DecklistPage(QWidget):
         decklist_label.setStyleSheet("""
             font-size: 15px;
             font-weight: 600;
+            border: none;
+            margin-top: 6px;
         """)
 
         editor_layout.addWidget(
@@ -297,18 +315,26 @@ class DecklistPage(QWidget):
         )
 
         self.deck_input.setMinimumHeight(
-            220
+            140
+        )
+
+        self.deck_input.setMaximumHeight(
+            190
         )
 
         editor_layout.addWidget(
             self.deck_input
         )
 
-        # --------------------------------------------------
-        # Action Buttons
-        # --------------------------------------------------
+        # ==================================================
+        # ACTION BUTTONS
+        # ==================================================
 
         action_layout = QHBoxLayout()
+
+        action_layout.setSpacing(
+            10
+        )
 
         check_button = QPushButton(
             "Check Deck"
@@ -338,76 +364,66 @@ class DecklistPage(QWidget):
             action_layout
         )
 
-        # --------------------------------------------------
-        # Summary Panel
-        # --------------------------------------------------
+        # ==================================================
+        # SUMMARY
+        # ==================================================
 
-        summary_panel = QFrame()
+        summary_layout = QHBoxLayout()
 
-        summary_panel.setStyleSheet("""
-            QFrame {
-                background-color: #171a21;
-                border: 1px solid #333946;
-                border-radius: 10px;
-            }
-        """)
-
-        summary_layout = QHBoxLayout(
-            summary_panel
-        )
-
-        summary_layout.setContentsMargins(
-            18,
-            14,
-            18,
-            14
+        summary_layout.setSpacing(
+            12
         )
 
         self.tracked_label = QLabel(
-            "Tracked Cards: 0"
+            "Tracked\n0"
         )
 
         self.owned_label = QLabel(
-            "Owned: 0"
+            "Owned\n0"
         )
 
         self.missing_label = QLabel(
-            "Missing: 0"
+            "Missing\n0"
         )
 
         self.completion_label = QLabel(
-            "Completion: 0%"
+            "Completion\n0%"
         )
 
-        summary_layout.addWidget(
-            self.tracked_label
-        )
-
-        summary_layout.addStretch()
-
-        summary_layout.addWidget(
-            self.owned_label
-        )
-
-        summary_layout.addStretch()
-
-        summary_layout.addWidget(
-            self.missing_label
-        )
-
-        summary_layout.addStretch()
-
-        summary_layout.addWidget(
+        summary_labels = [
+            self.tracked_label,
+            self.owned_label,
+            self.missing_label,
             self.completion_label
+        ]
+
+        for label in summary_labels:
+
+            label.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+
+            label.setStyleSheet("""
+                QLabel {
+                    background-color: #171a21;
+                    border: none;
+                    border-radius: 8px;
+                    padding: 10px 16px;
+                    font-size: 14px;
+                }
+            """)
+
+            summary_layout.addWidget(
+                label
+            )
+
+        editor_layout.addLayout(
+            summary_layout
         )
 
-        editor_layout.addWidget(
-            summary_panel
-        )
-
-        # --------------------------------------------------
-        # Results
-        # --------------------------------------------------
+        # ==================================================
+        # DECK RESULTS
+        # ==================================================
 
         results_label = QLabel(
             "Deck Results"
@@ -416,6 +432,8 @@ class DecklistPage(QWidget):
         results_label.setStyleSheet("""
             font-size: 18px;
             font-weight: 600;
+            border: none;
+            margin-top: 8px;
         """)
 
         editor_layout.addWidget(
@@ -424,63 +442,110 @@ class DecklistPage(QWidget):
 
         self.results_list = QListWidget()
 
-        self.results_list.setMinimumHeight(
-            260
+        self.results_list.setSpacing(
+            0
         )
 
+        self.results_list.setStyleSheet("""
+            QListWidget::item {
+                padding: 4px 8px;
+                margin: 0px;
+            }
+        """)
+
+        self.results_list.setMinimumHeight(
+            120
+        )
+
+        editor_layout.addWidget(
+            self.results_list,
+            stretch=2
+        )
+
+        # ==================================================
+        # SHOPPING LIST HEADER
+        # ==================================================
+
+        shopping_header = QHBoxLayout()
+
         self.shopping_title = QLabel(
-            "Missing Cards Shopping List"
+            "Missing Cards"
         )
 
         self.shopping_title.setStyleSheet("""
             font-size: 18px;
             font-weight: 600;
+            border: none;
+            margin-top: 6px;
         """)
 
-        self.shopping_list = QListWidget()
-
-        self.shopping_list.setMinimumHeight(
-            160
+        shopping_header.addWidget(
+            self.shopping_title
         )
 
+        shopping_header.addStretch()
+
         self.copy_shopping_button = QPushButton(
-            "Copy Shopping List"
+            "Copy List"
+        )
+
+        self.copy_shopping_button.setFixedWidth(
+            110
         )
 
         self.copy_shopping_button.clicked.connect(
             self.copy_shopping_list
         )
 
-        editor_layout.addWidget(
-            self.results_list
-        )
-
-        editor_layout.addWidget(
-            self.shopping_title
-        )
-
-        editor_layout.addWidget(
-            self.shopping_list
-        )
-
-        editor_layout.addWidget(
+        shopping_header.addWidget(
             self.copy_shopping_button
         )
 
+        editor_layout.addLayout(
+            shopping_header
+        )
+
+        # ==================================================
+        # SHOPPING LIST
+        # ==================================================
+
+        self.shopping_list = QListWidget()
+
+        self.shopping_list.setSpacing(
+            0
+        )
+
+        self.shopping_list.setStyleSheet("""
+            QListWidget::item {
+                padding: 4px 8px;
+                margin: 0px;
+            }
+        """)
+
+        self.shopping_list.setMinimumHeight(
+            90
+        )
+
+        editor_layout.addWidget(
+            self.shopping_list,
+            stretch=1
+        )
+
+        # ==================================================
+        # FINISH
+        # ==================================================
+
         content_layout.addWidget(
-            editor_panel
+            editor_panel,
+            stretch=1
         )
 
         main_layout.addLayout(
-            content_layout
-        )
-
-        self.setLayout(
-            main_layout
+            content_layout,
+            stretch=1
         )
 
         self.load_saved_decks()
-
     # --------------------------------------------------
     # Saved Decks
     # --------------------------------------------------
@@ -927,21 +992,26 @@ class DecklistPage(QWidget):
                 0
             )
 
+            total_tracked += (
+                quantity_needed
+            )
+
+            total_owned += (
+                usable_owned
+            )
+
+            total_missing += (
+                quantity_missing
+            )
+
+            # ------------------------------------------
+            # Shopping List
+            # ------------------------------------------
+
             if quantity_missing > 0:
+
                 shopping_items.append(
                     f"{quantity_missing} × {card_name}"
-                )
-
-                total_tracked += (
-                    quantity_needed
-                 )
-
-                total_owned += (
-                    usable_owned
-                )
-
-                total_missing += (
-                    quantity_missing
                 )
 
             # ------------------------------------------
@@ -964,6 +1034,7 @@ class DecklistPage(QWidget):
                 f"{display_extra}"
             )
 
+
         # --------------------------------------------------
         # Summary
         # --------------------------------------------------
@@ -980,20 +1051,24 @@ class DecklistPage(QWidget):
             completion = 0
 
         self.tracked_label.setText(
-            f"Tracked Cards: {total_tracked}"
+            f"Tracked\n{total_tracked}"
         )
 
         self.owned_label.setText(
-            f"Owned: {total_owned}"
+            f"Owned\n{total_owned}"
         )
 
         self.missing_label.setText(
-            f"Missing: {total_missing}"
+            f"Missing\n{total_missing}"
         )
 
         self.completion_label.setText(
-            f"Completion: {completion:.1f}%"
+            f"Completion\n{completion:.0f}%"
         )
+
+        # --------------------------------------------------
+        # Shopping List
+        # --------------------------------------------------
 
         self.shopping_list_data = (
             shopping_items
@@ -1004,6 +1079,7 @@ class DecklistPage(QWidget):
         if shopping_items:
 
             for item in shopping_items:
+
                 self.shopping_list.addItem(
                     item
                 )
@@ -1027,20 +1103,21 @@ class DecklistPage(QWidget):
     # --------------------------------------------------
 
     def reset_summary(self):
+
         self.tracked_label.setText(
-            "Tracked Cards: 0"
+            "Tracked\n0"
         )
 
         self.owned_label.setText(
-            "Owned: 0"
+            "Owned\n0"
         )
 
         self.missing_label.setText(
-            "Missing: 0"
+            "Missing\n0"
         )
 
         self.completion_label.setText(
-            "Completion: 0%"
+            "Completion\n0%"
         )
 
     # --------------------------------------------------

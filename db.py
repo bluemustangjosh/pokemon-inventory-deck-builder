@@ -505,6 +505,37 @@ def get_cards_by_exact_name(card_name):
         for row in rows
     ]
 
+def get_all_cards_for_scanner():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            name,
+            set_id,
+            number,
+            image_url
+        FROM cards
+        WHERE image_url IS NOT NULL
+          AND image_url != ''
+        ORDER BY id
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "set_id": row[2],
+            "number": row[3],
+            "image_url": row[4]
+        }
+        for row in rows
+    ]
 
 
     conn.commit()
