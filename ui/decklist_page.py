@@ -741,6 +741,7 @@ class DecklistPage(QWidget):
     # --------------------------------------------------
 
     def parse_decklist(self):
+        self.results_list.clear()
         self.shopping_list.clear()
 
         shopping_items = []

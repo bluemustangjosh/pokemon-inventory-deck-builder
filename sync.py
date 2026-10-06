@@ -1,14 +1,23 @@
-import os
 import hashlib
-import re
 import json
+import os
+import re
+
 from database.models import (
-    SessionLocal, Set, Card
+    Card,
+    Set,
+    SessionLocal
 )
+
 from paths import (
     CARDS_DIR,
     SETS_PATH
 )
+
+
+# ==========================================================
+# TEXT NORMALIZATION
+# ==========================================================
 
 def normalize_text(value):
     if value is None:
@@ -16,8 +25,6 @@ def normalize_text(value):
 
     value = str(value)
 
-    # Normalize spacing so harmless formatting
-    # differences do not create different keys.
     value = re.sub(
         r"\s+",
         " ",
@@ -37,85 +44,171 @@ def normalize_list(values):
     ]
 
 
+def normalize_attack_cost(values):
+    """
+    Some Pokémon card datasets represent
+    a zero-energy attack as:
+
+        []
+
+    while others represent the same thing as:
+
+        ["Free"]
+
+    For gameplay-equivalence purposes,
+    both should be treated as zero cost.
+    """
+
+    if not values:
+        return []
+
+    normalized = []
+
+    for value in values:
+
+        value = normalize_text(
+            value
+        )
+
+        if value == "free":
+            continue
+
+        normalized.append(
+            value
+        )
+
+    return normalized
+
+
+# ==========================================================
+# GAMEPLAY FINGERPRINT
+# ==========================================================
+
 def build_gameplay_key(card_data):
-    # Only Pokémon need gameplay-equivalence
-    # grouping right now.
-    if card_data.get("supertype") != "Pokémon":
+    """
+    Build a fingerprint representing the actual
+    gameplay characteristics of a Pokémon card.
+
+    Set, collector number, rarity, artwork, etc.
+    are deliberately ignored so equivalent
+    reprints can match one another.
+    """
+
+    if (
+        card_data.get("supertype")
+        != "Pokémon"
+    ):
         return None
+
+    # ------------------------------------------------------
+    # Abilities
+    # ------------------------------------------------------
 
     abilities = []
 
-    for ability in card_data.get(
-        "abilities",
-        []
+    for ability in (
+        card_data.get("abilities")
+        or []
     ):
+
         abilities.append({
             "name": normalize_text(
                 ability.get("name")
             ),
+
             "type": normalize_text(
                 ability.get("type")
             ),
+
             "text": normalize_text(
                 ability.get("text")
             )
         })
 
+    # ------------------------------------------------------
+    # Attacks
+    # ------------------------------------------------------
+
     attacks = []
 
-    for attack in card_data.get(
-        "attacks",
-        []
+    for attack in (
+        card_data.get("attacks")
+        or []
     ):
+
+        normalized_cost = (
+            normalize_attack_cost(
+                attack.get("cost")
+            )
+        )
+
         attacks.append({
             "name": normalize_text(
                 attack.get("name")
             ),
-            "cost": normalize_list(
-                attack.get("cost")
-            ),
+
+            "cost": normalized_cost,
+
+            # Do not trust convertedEnergyCost from
+            # the dataset because "Free" has been
+            # represented inconsistently.
             "converted_energy_cost":
-                attack.get(
-                    "convertedEnergyCost",
-                    0
-                ),
+                len(normalized_cost),
+
             "damage": normalize_text(
                 attack.get("damage")
             ),
+
             "text": normalize_text(
                 attack.get("text")
             )
         })
 
+    # ------------------------------------------------------
+    # Weaknesses
+    # ------------------------------------------------------
+
     weaknesses = []
 
-    for weakness in card_data.get(
-        "weaknesses",
-        []
+    for weakness in (
+        card_data.get("weaknesses")
+        or []
     ):
+
         weaknesses.append({
             "type": normalize_text(
                 weakness.get("type")
             ),
+
             "value": normalize_text(
                 weakness.get("value")
             )
         })
 
+    # ------------------------------------------------------
+    # Resistances
+    # ------------------------------------------------------
+
     resistances = []
 
-    for resistance in card_data.get(
-        "resistances",
-        []
+    for resistance in (
+        card_data.get("resistances")
+        or []
     ):
+
         resistances.append({
             "type": normalize_text(
                 resistance.get("type")
             ),
+
             "value": normalize_text(
                 resistance.get("value")
             )
         })
+
+    # ------------------------------------------------------
+    # Gameplay data
+    # ------------------------------------------------------
 
     gameplay_data = {
         "name": normalize_text(
@@ -139,7 +232,9 @@ def build_gameplay_key(card_data):
         ),
 
         "evolves_from": normalize_text(
-            card_data.get("evolvesFrom")
+            card_data.get(
+                "evolvesFrom"
+            )
         ),
 
         "abilities": abilities,
@@ -151,7 +246,9 @@ def build_gameplay_key(card_data):
         "resistances": resistances,
 
         "retreat_cost": normalize_list(
-            card_data.get("retreatCost")
+            card_data.get(
+                "retreatCost"
+            )
         ),
 
         "rules": normalize_list(
@@ -167,173 +264,504 @@ def build_gameplay_key(card_data):
     )
 
     return hashlib.sha256(
-        serialized.encode("utf-8")
+        serialized.encode(
+            "utf-8"
+        )
     ).hexdigest()
 
-def sync_all():
-    db = SessionLocal()
 
-    print("Loading local dataset...")
+# ==========================================================
+# SAFE MODEL ATTRIBUTE SETTER
+# ==========================================================
 
-    # -----------------------------
-    # Sync Sets
-    # -----------------------------
-    sets_path = SETS_PATH
+def set_if_available(
+    model,
+    field_name,
+    value
+):
+    """
+    Set a database model field only if that
+    field exists on the SQLAlchemy model.
 
-    with open(sets_path, "r", encoding="utf-8") as f:
-        sets = json.load(f)
+    This keeps sync.py tolerant of fields that
+    may differ between database versions.
+    """
 
-    for s in sets:
-        set_id = s.get("id")
+    if hasattr(
+        model,
+        field_name
+    ):
 
-        existing_set = db.query(Set).filter(Set.id == set_id).first()
+        setattr(
+            model,
+            field_name,
+            value
+        )
 
-        if existing_set:
-            existing_set.name = s.get("name")
-            existing_set.ptcgo_code = s.get("ptcgoCode")
-            existing_set.printed_total = s.get("printedTotal")
-            existing_set.release_date = s.get("releaseDate")
-            existing_set.updated_at = s.get("updatedAt")
+
+# ==========================================================
+# SET SYNC
+# ==========================================================
+
+def sync_sets(db):
+    print(
+        "Syncing sets..."
+    )
+
+    if not os.path.exists(
+        SETS_PATH
+    ):
+        print(
+            "Set data not found:",
+            SETS_PATH
+        )
+
+        return 0
+
+    with open(
+        SETS_PATH,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        sets_data = json.load(
+            file
+        )
+
+    existing_sets = {
+        pokemon_set.id:
+            pokemon_set
+
+        for pokemon_set
+        in db.query(Set).all()
+    }
+
+    total_sets = 0
+
+    for set_data in sets_data:
+
+        set_id = set_data.get(
+            "id"
+        )
+
+        if not set_id:
+            continue
+
+        existing = (
+            existing_sets.get(
+                set_id
+            )
+        )
+
+        if existing:
+
+            pokemon_set = existing
+
         else:
-            new_set = Set(
-                id=set_id,
-                name=s.get("name"),
-                ptcgo_code=s.get("ptcgoCode"),
-                printed_total=s.get("printedTotal"),
-                release_date=s.get("releaseDate"),
-                updated_at=s.get("updatedAt")
+
+            pokemon_set = Set()
+
+            set_if_available(
+                pokemon_set,
+                "id",
+                set_id
             )
 
-            db.add(new_set)
+            db.add(
+                pokemon_set
+            )
+
+            existing_sets[
+                set_id
+            ] = pokemon_set
+
+        set_if_available(
+            pokemon_set,
+            "name",
+            set_data.get(
+                "name"
+            )
+        )
+
+        set_if_available(
+            pokemon_set,
+            "series",
+            set_data.get(
+                "series"
+            )
+        )
+
+        set_if_available(
+            pokemon_set,
+            "printed_total",
+            set_data.get(
+                "printedTotal"
+            )
+        )
+
+        set_if_available(
+            pokemon_set,
+            "total",
+            set_data.get(
+                "total"
+            )
+        )
+
+        set_if_available(
+            pokemon_set,
+            "ptcgo_code",
+            set_data.get(
+                "ptcgoCode"
+            )
+        )
+
+        set_if_available(
+            pokemon_set,
+            "release_date",
+            set_data.get(
+                "releaseDate"
+            )
+        )
+
+        total_sets += 1
 
     db.commit()
 
-    print(f"Synced {len(sets)} sets.")
+    print(
+        f"Sets synced: "
+        f"{total_sets}"
+    )
 
-    # -----------------------------
-    # Preload Existing Cards
-    # -----------------------------
+    return total_sets
+
+
+# ==========================================================
+# CARD SYNC
+# ==========================================================
+
+def sync_cards(db):
+    print(
+        "Syncing cards..."
+    )
+
+    if not os.path.exists(
+        CARDS_DIR
+    ):
+
+        print(
+            "Card data folder "
+            "not found:",
+            CARDS_DIR
+        )
+
+        return 0
+
+    # ------------------------------------------------------
+    # Load existing cards ONCE
+    # ------------------------------------------------------
+
     existing_cards = {
         card.id: card
-        for card in db.query(Card).all()
+
+        for card
+        in db.query(Card).all()
     }
 
     print(
-        f"Loaded {len(existing_cards)} "
+        f"Loaded "
+        f"{len(existing_cards)} "
         f"existing cards into memory."
     )
 
-    # -----------------------------
-    # Sync Cards (one file per set)
-    # -----------------------------
-    cards_folder = CARDS_DIR
-
-    set_files = [
-        f for f in os.listdir(cards_folder)
-        if f.endswith(".json")
-    ]
-
     total_cards = 0
 
-    for filename in set_files:
-        path = os.path.join(cards_folder, filename)
+    filenames = sorted(
+        os.listdir(
+            CARDS_DIR
+        )
+    )
 
-        with open(path, "r", encoding="utf-8") as f:
-            cards = json.load(f)
+    for filename in filenames:
 
-        set_ref = os.path.splitext(filename)[0]
+        if not filename.lower().endswith(
+            ".json"
+        ):
+            continue
 
-        for c in cards:
-            card_id = c.get("id")
+        file_path = os.path.join(
+            CARDS_DIR,
+            filename
+        )
 
-            existing = existing_cards.get(
-                card_id
+        try:
+
+            with open(
+                file_path,
+                "r",
+                encoding="utf-8"
+            ) as file:
+
+                cards = json.load(
+                    file
+                )
+
+        except Exception as error:
+
+            print(
+                "Could not read:",
+                filename,
+                error
+            )
+
+            continue
+
+        set_ref = os.path.splitext(
+            filename
+        )[0]
+
+        for card_data in cards:
+
+            card_id = card_data.get(
+                "id"
+            )
+
+            if not card_id:
+                continue
+
+            existing = (
+                existing_cards.get(
+                    card_id
+                )
+            )
+
+            if existing:
+
+                card = existing
+
+            else:
+
+                card = Card()
+
+                set_if_available(
+                    card,
+                    "id",
+                    card_id
+                )
+
+                db.add(
+                    card
+                )
+
+                existing_cards[
+                    card_id
+                ] = card
+
+            subtypes = (
+                card_data.get(
+                    "subtypes"
+                )
+                or []
             )
 
             subtype = (
-                c.get("subtypes")[0]
-                if c.get("subtypes")
+                subtypes[0]
+                if subtypes
                 else None
             )
 
             image_url = (
-                c.get("images", {}).get("small")
+                card_data
+                .get(
+                    "images",
+                    {}
+                )
+                .get(
+                    "small"
+                )
             )
 
-            set_ref = os.path.splitext(
-                filename
-            )[0]
-
-            # Only calculate the gameplay key
-            # if this card does not already have one.
-            if (
-                existing
-                and existing.gameplay_key
-            ):
-                gameplay_key = (
-                    existing.gameplay_key
+            # IMPORTANT:
+            # Recalculate this every sync.
+            #
+            # Do NOT reuse an old stored
+            # gameplay_key. If our fingerprint
+            # algorithm improves, old cards need
+            # to receive the new key.
+            gameplay_key = (
+                build_gameplay_key(
+                    card_data
                 )
-            else:
-                gameplay_key = (
-                    build_gameplay_key(c)
+            )
+
+            # --------------------------------------------------
+            # Core card fields
+            # --------------------------------------------------
+
+            set_if_available(
+                card,
+                "name",
+                card_data.get(
+                    "name"
                 )
+            )
 
-                if existing:
-                    existing.name = c.get("name")
-                    existing.supertype = c.get("supertype")
-                    existing.subtype = subtype
-                    existing.number = c.get("number")
-                    existing.image_url = image_url
-                    existing.regulation_mark = c.get("regulationMark")
-                    existing.set_id = set_ref
-                    existing.gameplay_key = gameplay_key
+            set_if_available(
+                card,
+                "supertype",
+                card_data.get(
+                    "supertype"
+                )
+            )
 
-                else:
-                    new_card = Card(
-                        id=card_id,
-                        name=c.get("name"),
-                        supertype=c.get("supertype"),
-                        subtype=subtype,
-                        number=c.get("number"),
-                        image_url=image_url,
-                        regulation_mark=c.get("regulationMark"),
-                        set_id=set_ref,
-                        gameplay_key=gameplay_key
+            set_if_available(
+                card,
+                "subtype",
+                subtype
+            )
+
+            set_if_available(
+                card,
+                "hp",
+                card_data.get(
+                    "hp"
+                )
+            )
+
+            set_if_available(
+                card,
+                "set_id",
+                card_data.get(
+                    "set",
+                    {}
+                ).get(
+                    "id",
+                    set_ref
+                )
+            )
+
+            set_if_available(
+                card,
+                "number",
+                card_data.get(
+                    "number"
+                )
+            )
+
+            set_if_available(
+                card,
+                "rarity",
+                card_data.get(
+                    "rarity"
+                )
+            )
+
+            set_if_available(
+                card,
+                "artist",
+                card_data.get(
+                    "artist"
+                )
+            )
+
+            set_if_available(
+                card,
+                "image_url",
+                image_url
+            )
+
+            set_if_available(
+                card,
+                "gameplay_key",
+                gameplay_key
+            )
+
+            # --------------------------------------------------
+            # Extra fields, if your Card model has them
+            # --------------------------------------------------
+
+            set_if_available(
+                card,
+                "types",
+                json.dumps(
+                    card_data.get(
+                        "types"
                     )
-
-                    db.add(new_card)
-
-                total_cards += 1
-            
-            if existing:
-                existing.name = c.get("name")
-                existing.supertype = c.get("supertype")
-                existing.subtype = subtype
-                existing.number = c.get("number")
-                existing.image_url = image_url
-                existing.regulation_mark = c.get("regulationMark")
-                existing.set_id = set_ref
-                existing.gameplay_key = gameplay_key
-
-            else:
-                new_card = Card(
-                    id=card_id,
-                    name=c.get("name"),
-                    supertype=c.get("supertype"),
-                    subtype=subtype,
-                    number=c.get("number"),
-                    image_url=image_url,
-                    regulation_mark=c.get("regulationMark"),
-                    set_id=set_ref,
-                    gameplay_key=gameplay_key
+                    or []
                 )
+            )
 
-                db.add(new_card)
+            set_if_available(
+                card,
+                "rules",
+                json.dumps(
+                    card_data.get(
+                        "rules"
+                    )
+                    or []
+                )
+            )
 
-                existing_cards[card_id] = new_card
+            set_if_available(
+                card,
+                "retreat_cost",
+                json.dumps(
+                    card_data.get(
+                        "retreatCost"
+                    )
+                    or []
+                )
+            )
 
-                total_cards += 1
+            set_if_available(
+                card,
+                "converted_retreat_cost",
+                card_data.get(
+                    "convertedRetreatCost"
+                )
+            )
+
+            set_if_available(
+                card,
+                "evolves_from",
+                card_data.get(
+                    "evolvesFrom"
+                )
+            )
+
+            total_cards += 1
 
     db.commit()
-    db.close()
-    print("Local dataset sync complete.")
+
+    print(
+        f"Cards synced: "
+        f"{total_cards}"
+    )
+
+    return total_cards
+
+
+# ==========================================================
+# SYNC EVERYTHING
+# ==========================================================
+
+def sync_all():
+    db = SessionLocal()
+
+    try:
+
+        sync_sets(
+            db
+        )
+
+        sync_cards(
+            db
+        )
+
+    except Exception:
+
+        db.rollback()
+        raise
+
+    finally:
+
+        db.close()
